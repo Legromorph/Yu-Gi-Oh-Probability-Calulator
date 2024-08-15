@@ -11,51 +11,41 @@ class YugiohProbabilityCalculator:
         self.master = master
         master.title("Yu-Gi-Oh! Wahrscheinlichkeitsrechner")
 
-        # Initialize the deck list
         self.deck = []
         self.current_file_path = None
 
-        # Create and place GUI elements
         self.create_widgets()
         self.setup_menu()
 
-        # Load existing deck or create a new one
         if messagebox.askyesno("Deckliste laden?", "Möchten Sie eine gespeicherte Deckliste laden?"):
             self.load_deck()
         else:
             self.new_deck()
 
     def create_widgets(self):
-        # Erstelle Listboxes für verschiedene Kartentypen
         self.deck_list_monster = self.create_listbox("Monster")
         self.deck_list_spell = self.create_listbox("Zauber")
         self.deck_list_trap = self.create_listbox("Falle")
         self.search_targets_listbox = self.create_listbox("Suchziele")
 
-        # Erstelle einen Notebook-Widget (Tab-Control)
         self.notebook = ttk.Notebook(self.master)
         self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Füge die Reiter hinzu
         self.create_deck_tab()
         self.create_single_card_tab()
         self.create_tags_tab()
 
-        # Erstelle Kartenanzahl-Label
         self.card_count_label = tk.Label(self.master, text="Main Deck (0)")
         self.card_count_label.pack()
 
-        # Setze die Listboxen nebeneinander
         self.setup_listbox_layout()
 
     def setup_listbox_layout(self):
-        # Anordnung der Listboxen nebeneinander
         self.deck_list_monster.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.deck_list_spell.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.deck_list_trap.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.search_targets_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Setze eine Funktion für das Selektieren von Karten in den Listboxen
         self.deck_list_monster.bind("<<ListboxSelect>>", self.show_search_targets)
         self.deck_list_spell.bind("<<ListboxSelect>>", self.show_search_targets)
         self.deck_list_trap.bind("<<ListboxSelect>>", self.show_search_targets)
@@ -64,7 +54,6 @@ class YugiohProbabilityCalculator:
         deck_tab = ttk.Frame(self.notebook)
         self.notebook.add(deck_tab, text="Deck")
 
-        # Füge Aktions-Buttons hinzu
         self.add_card_button = ttk.Button(deck_tab, text="Karte hinzufügen", command=lambda: self.open_card_window())
         self.add_card_button.pack()
 
@@ -78,13 +67,10 @@ class YugiohProbabilityCalculator:
         single_card_tab = ttk.Frame(self.notebook)
         self.notebook.add(single_card_tab, text="Einzelkarte")
 
-        # Dropdown Menü für die Auswahl einer Karte
         self.selected_card = tk.StringVar()
         card_names = [card["name"] for card in self.deck]
         self.card_dropdown = ttk.Combobox(single_card_tab, textvariable=self.selected_card, values=card_names)
         self.card_dropdown.pack(padx=10, pady=10)
-
-        # Button für die Einzelkarten-Wahrscheinlichkeitsberechnung
         calculate_button = ttk.Button(single_card_tab, text="Wahrscheinlichkeit berechnen", command=self.calculate_single_card_probability)
         calculate_button.pack(padx=10, pady=10)
 
@@ -92,7 +78,6 @@ class YugiohProbabilityCalculator:
         tags_tab = ttk.Frame(self.notebook)
         self.notebook.add(tags_tab, text="Tags")
 
-        # Mehrfachauswahl für Tags
         self.selected_tags = []
         tags = ["Engine", "1-Card Starter", "Engine-Requirement", "Normal-Summon", "Extender", "Non-Engine", "Draw", "Search"]
         for tag in tags:
@@ -101,7 +86,6 @@ class YugiohProbabilityCalculator:
             checkbox.pack(anchor=tk.W, padx=10, pady=2)
             self.selected_tags.append((tag, var))
 
-        # Button für die Tags-Wahrscheinlichkeitsberechnung
         calculate_button = ttk.Button(tags_tab, text="Wahrscheinlichkeit berechnen", command=self.calculate_tags_probability)
         calculate_button.pack(padx=10, pady=10)
 
@@ -110,7 +94,6 @@ class YugiohProbabilityCalculator:
         tags_tab = ttk.Frame(self.notebook)
         self.notebook.add(tags_tab, text="Tags")
 
-        # Mehrfachauswahl für Tags
         self.selected_tags = []
         tags = ["Engine", "1-Card Starter", "Engine-Requirement", "Normal-Summon", "Extender", "Non-Engine", "Draw", "Search"]
         for tag in tags:
@@ -120,18 +103,14 @@ class YugiohProbabilityCalculator:
             self.selected_tags.append((tag, var))
 
     def show_search_targets(self, event):
-        # Leere die Suchziele Listbox
         self.search_targets_listbox.delete(0, tk.END)
 
-        # Finde die ausgewählte Karte in der Listbox
         listbox = event.widget
         selected = listbox.curselection()
         if not selected:
             return
 
         card_name = listbox.get(selected[0]).split(' (')[0]
-
-        # Finde die Karte in der Deck-Liste
         card = next((card for card in self.deck if card["name"] == card_name), None)
         if card and "search_cards" in card:
             for search_target in card["search_cards"]:
@@ -264,22 +243,18 @@ class YugiohProbabilityCalculator:
                 messagebox.showerror("Fehler", "Eine Karte mit diesem Namen ist bereits im Deck vorhanden.")
                 return
 
+            data = {
+                    "name": card_name,
+                    "anzahl": anzahl,
+                    "type": card_type,
+                    "tags": selected_tags,
+                    "search_cards": selected_search_cards
+                }
+
             if is_editing:
-                card_data.update({
-                    "name": card_name,
-                    "anzahl": anzahl,
-                    "type": card_type,
-                    "tags": selected_tags,
-                    "search_cards": selected_search_cards
-                })
+                card_data.update(data)
             else:
-                self.deck.append({
-                    "name": card_name,
-                    "anzahl": anzahl,
-                    "type": card_type,
-                    "tags": selected_tags,
-                    "search_cards": selected_search_cards
-                })
+                self.deck_manager.deck.append(data)
 
             self.update_deck_list()
             card_window.destroy()
@@ -361,15 +336,6 @@ class YugiohProbabilityCalculator:
 
 
     def probability_card_in_hand(self,deck_size, hand_size, card_name, card_data):
-        """
-        Berechnet die Wahrscheinlichkeit, dass eine bestimmte Karte in der Hand ist, wobei Suchkarten berücksichtigt werden.
-        
-        :param deck_size: Die Größe des Decks.
-        :param hand_size: Die Anzahl der gezogenen Karten.
-        :param card_name: Der Name der bestimmten Karte.
-        :param card_data: Eine Liste von Karteninformationen.
-        :return: Die Wahrscheinlichkeit.
-        """
         def combination(n, k):
             return math.comb(n, k) if k <= n else 0
 
@@ -401,14 +367,9 @@ class YugiohProbabilityCalculator:
             total_card_count = 0
         
         print(total_card_count)
-        # Wahrscheinlichkeit berechnen, dass die Karte in der Hand ist
         def prob_card_in_hand(card_count, deck_size, hand_size):
-            # Wahrscheinlichkeit, dass die Karte nicht in der Hand ist
             prob_no_card_in_hand = combination(deck_size - card_count, hand_size) / combination(deck_size, hand_size)
-            # Wahrscheinlichkeit, dass die Karte in der Hand ist
             return 1 - prob_no_card_in_hand
-
-        # Berechnung der Wahrscheinlichkeit, dass die Karte in der Hand ist
         prob_card = prob_card_in_hand(total_card_count, deck_size, hand_size)
         
         return prob_card
@@ -422,26 +383,14 @@ class YugiohProbabilityCalculator:
 
 
     def probability_only_tags(self,deck_size, hand_size, tags, card_data):
-        """
-        Berechnet die Wahrscheinlichkeit, dass nur Karten mit den gegebenen Tags auf die Hand gezogen werden,
-        wobei Suchkarten berücksichtigt werden.
-
-        :param deck_size: Die Größe des Decks.
-        :param hand_size: Die Anzahl der gezogenen Karten.
-        :param tags: Die Tags, die für die Karten relevant sind.
-        :param card_data: Eine Liste von Karteninformationen.
-        :return: Die Wahrscheinlichkeit.
-        """
         def combination(n, k):
             return math.comb(n, k) if k <= n else 0
 
-        # Karten zählen, die die gegebenen Tags haben
         num_cards_with_tags = 0
         for card in card_data:
             if all(tag in card.get("tags", []) for tag in tags):
                 num_cards_with_tags += card["anzahl"]
 
-        # Karten zählen, die durch Suchkarten erhöht werden
         searchable_cards = set()
         for card in card_data:
             if "Search" in card.get("tags", []):
@@ -453,14 +402,10 @@ class YugiohProbabilityCalculator:
         
         total_cards_with_tags = num_cards_with_tags + num_searchable_cards
         
-        # Wahrscheinlichkeit berechnen, dass alle gezogenen Karten die Tags haben
         prob_all_with_tags = (combination(total_cards_with_tags, hand_size) /
                             combination(deck_size, hand_size))
         
         return prob_all_with_tags
-
-
-
 
     def calculate_single_card_probability(self):
         card_name = self.selected_card.get().split(' (')[0]
@@ -481,28 +426,6 @@ class YugiohProbabilityCalculator:
         deck_size = sum(card["anzahl"] for card in self.deck)
         probability = self.probability_only_tags(deck_size, 5, selected_tags, self.deck)
         messagebox.showinfo("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass nur Karten mit den Tags {', '.join(selected_tags)} in der Starthand sind, beträgt {probability:.2%}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -1,59 +1,49 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import json
-from deck import Deck
-from probability import ProbabilityCalculator
+from tkinter import ttk, messagebox
+from deck_manager import DeckManager
+from probability_calculator import ProbabilityCalculator
 
-class YugiohProbabilityCalculatorGUI:
+class YugiohProbabilityCalculator:
     def __init__(self, master):
         self.master = master
         master.title("Yu-Gi-Oh! Wahrscheinlichkeitsrechner")
 
-        # Initialize the deck and probability calculator
-        self.deck = Deck()
-        self.probability_calculator = ProbabilityCalculator(self.deck)
+        self.deck_manager = DeckManager()
+        self.probability_calculator = ProbabilityCalculator(self.deck_manager)
 
-        # Create and place GUI elements
         self.create_widgets()
         self.setup_menu()
 
-        # Load existing deck or create a new one
         if messagebox.askyesno("Deckliste laden?", "Möchten Sie eine gespeicherte Deckliste laden?"):
-            self.load_deck()
+            self.deck_manager.load_deck()
         else:
-            self.new_deck()
+            self.deck_manager.new_deck()
+        self.update_deck_list()
 
     def create_widgets(self):
-        # Erstelle Listboxes für verschiedene Kartentypen
         self.deck_list_monster = self.create_listbox("Monster")
         self.deck_list_spell = self.create_listbox("Zauber")
         self.deck_list_trap = self.create_listbox("Falle")
         self.search_targets_listbox = self.create_listbox("Suchziele")
 
-        # Erstelle einen Notebook-Widget (Tab-Control)
         self.notebook = ttk.Notebook(self.master)
         self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Füge die Reiter hinzu
         self.create_deck_tab()
         self.create_single_card_tab()
         self.create_tags_tab()
 
-        # Erstelle Kartenanzahl-Label
         self.card_count_label = tk.Label(self.master, text="Main Deck (0)")
         self.card_count_label.pack()
 
-        # Setze die Listboxen nebeneinander
         self.setup_listbox_layout()
 
     def setup_listbox_layout(self):
-        # Anordnung der Listboxen nebeneinander
         self.deck_list_monster.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.deck_list_spell.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.deck_list_trap.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.search_targets_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Setze eine Funktion für das Selektieren von Karten in den Listboxen
         self.deck_list_monster.bind("<<ListboxSelect>>", self.show_search_targets)
         self.deck_list_spell.bind("<<ListboxSelect>>", self.show_search_targets)
         self.deck_list_trap.bind("<<ListboxSelect>>", self.show_search_targets)
@@ -62,8 +52,7 @@ class YugiohProbabilityCalculatorGUI:
         deck_tab = ttk.Frame(self.notebook)
         self.notebook.add(deck_tab, text="Deck")
 
-        # Füge Aktions-Buttons hinzu
-        self.add_card_button = ttk.Button(deck_tab, text="Karte hinzufügen", command=self.open_card_window)
+        self.add_card_button = ttk.Button(deck_tab, text="Karte hinzufügen", command=lambda: self.open_card_window())
         self.add_card_button.pack()
 
         self.remove_card_button = ttk.Button(deck_tab, text="Karte entfernen", command=self.remove_card)
@@ -76,13 +65,11 @@ class YugiohProbabilityCalculatorGUI:
         single_card_tab = ttk.Frame(self.notebook)
         self.notebook.add(single_card_tab, text="Einzelkarte")
 
-        # Dropdown Menü für die Auswahl einer Karte
         self.selected_card = tk.StringVar()
-        card_names = [card["name"] for card in self.deck.cards]
+        card_names = [card["name"] for card in self.deck_manager.deck]
         self.card_dropdown = ttk.Combobox(single_card_tab, textvariable=self.selected_card, values=card_names)
         self.card_dropdown.pack(padx=10, pady=10)
 
-        # Button für die Einzelkarten-Wahrscheinlichkeitsberechnung
         calculate_button = ttk.Button(single_card_tab, text="Wahrscheinlichkeit berechnen", command=self.calculate_single_card_probability)
         calculate_button.pack(padx=10, pady=10)
 
@@ -90,7 +77,6 @@ class YugiohProbabilityCalculatorGUI:
         tags_tab = ttk.Frame(self.notebook)
         self.notebook.add(tags_tab, text="Tags")
 
-        # Mehrfachauswahl für Tags
         self.selected_tags = []
         tags = ["Engine", "1-Card Starter", "Engine-Requirement", "Normal-Summon", "Extender", "Non-Engine", "Draw", "Search"]
         for tag in tags:
@@ -99,24 +85,19 @@ class YugiohProbabilityCalculatorGUI:
             checkbox.pack(anchor=tk.W, padx=10, pady=2)
             self.selected_tags.append((tag, var))
 
-        # Button für die Tags-Wahrscheinlichkeitsberechnung
         calculate_button = ttk.Button(tags_tab, text="Wahrscheinlichkeit berechnen", command=self.calculate_tags_probability)
         calculate_button.pack(padx=10, pady=10)
 
     def show_search_targets(self, event):
-        # Leere die Suchziele Listbox
         self.search_targets_listbox.delete(0, tk.END)
 
-        # Finde die ausgewählte Karte in der Listbox
         listbox = event.widget
         selected = listbox.curselection()
         if not selected:
             return
 
         card_name = listbox.get(selected[0]).split(' (')[0]
-
-        # Finde die Karte in der Deck-Liste
-        card = next((card for card in self.deck.cards if card["name"] == card_name), None)
+        card = next((card for card in self.deck_manager.deck if card["name"] == card_name), None)
         if card and "search_cards" in card:
             for search_target in card["search_cards"]:
                 self.search_targets_listbox.insert(tk.END, search_target)
@@ -132,37 +113,18 @@ class YugiohProbabilityCalculatorGUI:
     def setup_menu(self):
         menubar = tk.Menu(self.master)
         filemenu = tk.Menu(menubar, tearoff=0)
-        filemenu.add_command(label="Neues Deck", command=self.new_deck)
-        filemenu.add_command(label="Öffnen", command=self.load_deck)
-        filemenu.add_command(label="Speichern", command=self.save_deck)
+        filemenu.add_command(label="Neues Deck", command=self.deck_manager.new_deck)
+        filemenu.add_command(label="Öffnen", command=self.deck_manager.load_deck)
+        filemenu.add_command(label="Speichern", command=self.deck_manager.save_deck)
         filemenu.add_separator()
         filemenu.add_command(label="Beenden", command=self.master.quit)
         menubar.add_cascade(label="Datei", menu=filemenu)
         self.master.config(menu=menubar)
 
-    def save_deck(self, file_path=None):
-        if file_path is None and self.deck.file_path is None:
-            file_path = filedialog.asksaveasfilename(defaultextension=".json")
-        elif file_path is None:
-            file_path = self.deck.file_path
-
-        if file_path:
-            self.deck.save(file_path)
-
-    def load_deck(self):
-        file_path = filedialog.askopenfilename(defaultextension=".json")
-        if file_path:
-            self.deck.load(file_path)
-            self.update_deck_list()
-
-    def new_deck(self):
-        self.deck.clear()
-        self.update_deck_list()
-
     def update_deck_list(self):
         self.clear_listboxes()
 
-        for card in self.deck.cards:
+        for card in self.deck_manager.deck:
             display_text = f"{card['name']} ({card['anzahl']})"
             if card["type"] == "Monster":
                 self.deck_list_monster.insert(tk.END, display_text)
@@ -179,7 +141,7 @@ class YugiohProbabilityCalculatorGUI:
 
     def update_card_count_label(self):
         counts = {"Monster": 0, "Zauber": 0, "Falle": 0}
-        for card in self.deck.cards:
+        for card in self.deck_manager.deck:
             counts[card["type"]] += card["anzahl"]
 
         total_count = sum(counts.values())
@@ -202,87 +164,155 @@ class YugiohProbabilityCalculatorGUI:
         card_type_dropdown = self.create_combobox(card_window, "Kartentyp:", ["Monster", "Zauber", "Falle"])
         if is_editing:
             card_type_dropdown.set(card_data["type"])
+        else:
+            card_type_dropdown.set("Monster")
 
-        save_button = ttk.Button(card_window, text="Speichern", command=lambda: self.save_card(card_data, card_name_entry.get(), int(card_anzahl_spinbox.get()), card_type_dropdown.get(), card_window))
-        save_button.pack(padx=10, pady=10)
+        tag_vars, tag_buttons = self.create_tags(card_window)
+        if is_editing:
+            for tag in card_data["tags"]:
+                if tag in tag_vars:
+                    tag_vars[tag].set(True)
 
-    def create_entry(self, parent, label_text):
-        frame = ttk.Frame(parent)
-        frame.pack(padx=10, pady=5)
-        label = ttk.Label(frame, text=label_text)
-        label.pack(side=tk.LEFT)
-        entry = ttk.Entry(frame)
-        entry.pack(side=tk.LEFT)
+        search_cards_var = tag_vars["Search"]
+        search_listbox = self.create_search_listbox(card_window)
+        if is_editing:
+            self.populate_search_listbox(search_listbox, card_data["search_cards"])
+        else:
+            self.populate_search_listbox(search_listbox, self.deck_manager.deck)
+
+        def toggle_search_listbox():
+            if search_cards_var.get():
+                search_listbox.grid(row=12, column=0, padx=10, pady=10, sticky="nsew")
+            else:
+                search_listbox.grid_forget()
+
+        tag_buttons["Search"].config(command=toggle_search_listbox)
+        toggle_search_listbox()
+
+        def save_card():
+            card_name = card_name_entry.get()
+            anzahl = int(card_anzahl_spinbox.get())
+            card_type = card_type_dropdown.get()
+            selected_tags = [tag for tag, var in tag_vars.items() if var.get()]
+            selected_search_cards = [search_listbox.get(i) for i in search_listbox.curselection()] if "Search" in selected_tags else []
+
+            if "Search" in selected_tags and not selected_search_cards:
+                messagebox.showerror("Fehler", "Bitte wählen Sie Suchziele aus.")
+                return
+            if not card_name:
+                messagebox.showerror("Fehler", "Bitte geben Sie einen Kartennamen ein.")
+                return
+            if any(card["name"] == card_name and card["name"] != (card_data["name"] if is_editing else "") for card in self.deck_manager.deck):
+                messagebox.showerror("Fehler", "Eine Karte mit diesem Namen ist bereits im Deck vorhanden.")
+                return
+            
+            data = {
+                    "name": card_name,
+                    "anzahl": anzahl,
+                    "type": card_type,
+                    "tags": selected_tags,
+                    "search_cards": selected_search_cards
+                }
+
+            if is_editing:
+                card_data.update(data)
+            else:
+                self.deck_manager.deck.append(data)
+
+            self.update_deck_list()
+            card_window.destroy()
+
+        tk.Button(card_window, text="Speichern", command=save_card).grid(row=13, column=0, columnspan=2, padx=10, pady=10)
+
+        card_window.columnconfigure(0, weight=1)
+        card_window.columnconfigure(1, weight=1)
+        card_window.rowconfigure(5, weight=1)
+
+    def create_entry(self, window, label_text):
+        tk.Label(window, text=label_text).grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        entry = tk.Entry(window)
+        entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
         return entry
 
-    def create_spinbox(self, parent, label_text):
-        frame = ttk.Frame(parent)
-        frame.pack(padx=10, pady=5)
-        label = ttk.Label(frame, text=label_text)
-        label.pack(side=tk.LEFT)
-        spinbox = ttk.Spinbox(frame, from_=1, to=99)
-        spinbox.pack(side=tk.LEFT)
+    def create_spinbox(self, window, label_text):
+        tk.Label(window, text=label_text).grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        spinbox = tk.Spinbox(window, from_=1, to=3)
+        spinbox.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
         return spinbox
 
-    def create_combobox(self, parent, label_text, values):
-        frame = ttk.Frame(parent)
-        frame.pack(padx=10, pady=5)
-        label = ttk.Label(frame, text=label_text)
-        label.pack(side=tk.LEFT)
-        combobox = ttk.Combobox(frame, values=values)
-        combobox.pack(side=tk.LEFT)
+    def create_combobox(self, window, label_text, values):
+        tk.Label(window, text=label_text).grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        combobox = ttk.Combobox(window, values=values)
+        combobox.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
         return combobox
 
-    def save_card(self, card_data, name, anzahl, card_type, window):
-        if not name or not anzahl or not card_type:
-            messagebox.showwarning("Warnung", "Bitte alle Felder ausfüllen.")
-            return
+    def create_tags(self, window):
+        tags = ["Engine", "1-Card Starter", "Engine-Requirement", "Normal-Summon", "Extender", "Non-Engine", "Draw", "Search"]
+        tag_vars = {}
+        tag_buttons = {}
+        for i, tag in enumerate(tags):
+            var = tk.BooleanVar()
+            checkbutton = tk.Checkbutton(window, text=tag, variable=var)
+            checkbutton.grid(row=3 + i, column=0, padx=10, pady=5, sticky="w")
+            tag_buttons[tag] = checkbutton
+            tag_vars[tag] = var
+        return tag_vars, tag_buttons
 
-        if card_data:
-            card_data.update({"name": name, "anzahl": anzahl, "type": card_type})
-        else:
-            self.deck.add_card({"name": name, "anzahl": anzahl, "type": card_type})
-
-        self.update_deck_list()
-        window.destroy()
-
-    def remove_card(self):
-        selected = self.deck_list_monster.curselection() + self.deck_list_spell.curselection() + self.deck_list_trap.curselection()
-        if not selected:
-            messagebox.showwarning("Warnung", "Bitte eine Karte auswählen.")
-            return
-
-        listbox = self.deck_list_monster if self.deck_list_monster.curselection() else (self.deck_list_spell if self.deck_list_spell.curselection() else self.deck_list_trap)
-        card_name = listbox.get(selected[0]).split(' (')[0]
-        self.deck.remove_card(card_name)
-        self.update_deck_list()
+    def create_search_listbox(self, window):
+        search_listbox = tk.Listbox(window, selectmode=tk.MULTIPLE)
+        search_listbox.grid(row=12, column=0, padx=10, pady=10, sticky="nsew")
+        search_listbox.grid_forget()
+        return search_listbox
 
     def edit_card(self):
-        selected = self.deck_list_monster.curselection() + self.deck_list_spell.curselection() + self.deck_list_trap.curselection()
-        if not selected:
-            messagebox.showwarning("Warnung", "Bitte eine Karte auswählen.")
+        card_to_edit = self.get_selected_card(self.deck_list_monster) or self.get_selected_card(self.deck_list_spell) or self.get_selected_card(self.deck_list_trap)
+        if not card_to_edit:
+            messagebox.showerror("Fehler", "Bitte wählen Sie eine Karte zum Bearbeiten aus.")
             return
 
-        listbox = self.deck_list_monster if self.deck_list_monster.curselection() else (self.deck_list_spell if self.deck_list_spell.curselection() else self.deck_list_trap)
-        card_name = listbox.get(selected[0]).split(' (')[0]
-        card_data = next(card for card in self.deck.cards if card["name"] == card_name)
+        card_data = next(card for card in self.deck_manager.deck if card["name"] == card_to_edit.split(' (')[0])
         self.open_card_window(card_data)
 
-    def calculate_single_card_probability(self):
-        card_name = self.selected_card.get()
-        if not card_name:
-            messagebox.showwarning("Warnung", "Bitte eine Karte auswählen.")
+    def get_selected_card(self, listbox):
+        selected = listbox.curselection()
+        if selected:
+            return listbox.get(selected[0])
+        return None
+
+    def populate_search_listbox(self, listbox, selected_cards):
+        listbox.delete(0, tk.END)
+        all_cards = [card["name"] for card in self.deck_manager.deck]
+        for item in all_cards:
+            listbox.insert(tk.END, item)
+            if item in selected_cards:
+                listbox.select_set(all_cards.index(item))
+
+    def remove_card(self):
+        card_to_remove = self.get_selected_card(self.deck_list_monster) or self.get_selected_card(self.deck_list_spell) or self.get_selected_card(self.deck_list_trap)
+        if not card_to_remove:
+            messagebox.showerror("Fehler", "Bitte wählen Sie eine Karte zum Entfernen aus.")
             return
 
-        probability = self.probability_calculator.calculate_probability_for_card(card_name)
-        messagebox.showinfo("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass {card_name} gezogen wird, beträgt {probability:.2f}%.")
+        card_name = card_to_remove.split(' (')[0]
+        self.deck_manager.deck = [card for card in self.deck_manager.deck if card["name"] != card_name]
+        self.update_deck_list()
+
+    def calculate_single_card_probability(self):
+        card_name = self.selected_card.get().split(' (')[0]
+        if not card_name:
+            messagebox.showerror("Fehler", "Bitte wählen Sie eine Karte aus.")
+            return
+
+        deck_size = sum(card["anzahl"] for card in self.deck_manager.deck)
+        probability = self.probability_calculator.probability_card_in_hand(deck_size, 5, card_name)
+        messagebox.showinfo("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass {card_name} in der Starthand ist, beträgt {probability:.2%}")
 
     def calculate_tags_probability(self):
         selected_tags = [tag for tag, var in self.selected_tags if var.get()]
         if not selected_tags:
-            messagebox.showwarning("Warnung", "Bitte mindestens einen Tag auswählen.")
+            messagebox.showerror("Fehler", "Bitte wählen Sie mindestens einen Tag aus.")
             return
 
-        probability = self.probability_calculator.calculate_probability_for_tags(selected_tags)
-        tags_str = ", ".join(selected_tags)
-        messagebox.showinfo("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass eine Karte mit den Tags ({tags_str}) gezogen wird, beträgt {probability:.2f}%.")
+        deck_size = sum(card["anzahl"] for card in self.deck_manager.deck)
+        probability = self.probability_calculator.probability_only_tags(deck_size, 5, selected_tags)
+        messagebox.showinfo("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass nur Karten mit den Tags {', '.join(selected_tags)} in der Starthand sind, beträgt {probability:.2%}")

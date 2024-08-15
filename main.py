@@ -1,10 +1,7 @@
 import tkinter as tk
-from gui import YugiohProbabilityCalculatorGUI
-
-def main():
-    root = tk.Tk()
-    app = YugiohProbabilityCalculatorGUI(root)
-    root.mainloop()
+from gui import YugiohProbabilityCalculator
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = YugiohProbabilityCalculator(root)
+    root.mainloop()
