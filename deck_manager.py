@@ -7,11 +7,13 @@ class DeckManager:
         self.current_file_path = None
 
     def save_deck(self, file_path=None):
+        print("saving")
         if file_path is None and self.current_file_path is None:
             file_path = filedialog.asksaveasfilename(defaultextension=".json")
         elif file_path is None:
             file_path = self.current_file_path
 
+        print("saving to" + file_path)
         if file_path:
             with open(file_path, "w") as f:
                 json.dump(self.deck, f)
@@ -26,5 +28,3 @@ class DeckManager:
 
     def new_deck(self):
         self.deck = []
-
-    # Weitere Funktionen zum Bearbeiten des Decks hinzufügen

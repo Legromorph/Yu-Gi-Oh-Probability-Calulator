@@ -254,7 +254,7 @@ class YugiohProbabilityCalculator:
             if is_editing:
                 card_data.update(data)
             else:
-                self.deck_manager.deck.append(data)
+                self.deck.append(data)
 
             self.update_deck_list()
             card_window.destroy()
