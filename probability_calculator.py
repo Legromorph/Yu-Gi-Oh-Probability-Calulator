@@ -1,11 +1,22 @@
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Dict, List, Any, Tuple, Optional, Callable
 
+# These are treated as "draw counts" instead of impact
 DRAW_TRAPS = {"fuwa", "purulia"}
 
 
-def _normalize_deck(decklist: Dict[str, int], deckcount: Optional[int] = None, fill_blanks: bool = True) -> List[str]:
+def _normalize_deck(
+    decklist: Dict[str, int],
+    deckcount: Optional[int] = None,
+    fill_blanks: bool = True
+) -> List[str]:
+    """
+    Build a concrete deck list (list of card names).
+    - decklist may contain 0-count entries (kept for testing convenience)
+    - negative counts are rejected
+    - "__blank__" can be auto-added if fill_blanks=True and deckcount > used
+    """
     dl = dict(decklist)
     dl.pop("__blank__", None)
 
@@ -19,7 +30,7 @@ def _normalize_deck(decklist: Dict[str, int], deckcount: Optional[int] = None, f
     if used < deckcount and fill_blanks:
         dl["__blank__"] = deckcount - used
 
-    deck = []
+    deck: List[str] = []
     for name, cnt in dl.items():
         if cnt < 0:
             raise ValueError(f"negative count for {name}: {cnt}")
@@ -33,8 +44,8 @@ def _normalize_deck(decklist: Dict[str, int], deckcount: Optional[int] = None, f
     return deck
 
 
-def _dict_cards(cards: Dict[str, int] | None) -> Dict[str, int]:
-    """Sanitize {card:qty} dict."""
+def _dict_cards(cards: Optional[Dict[str, int]]) -> Dict[str, int]:
+    """Sanitize {card: qty} dict."""
     out: Dict[str, int] = {}
     if not cards:
         return out
@@ -60,6 +71,7 @@ def _matches_required(hand_counts: Counter, required: Dict[str, int]) -> bool:
 def _matches_or_groups(hand_counts: Counter, or_groups: List[List[Dict[str, int]]]) -> bool:
     """
     Each OR-group must have at least one option matched.
+
     or_groups = [
         [ {"chant":1}, {"ascendance":1}, ... ],   # group 1
         [ {"x":1, "y":1}, {"z":1} ]               # group 2 (optional)
@@ -70,7 +82,6 @@ def _matches_or_groups(hand_counts: Counter, or_groups: List[List[Dict[str, int]
 
     for group in or_groups:
         if not group:
-            # empty group = ignore
             continue
         ok = False
         for option in group:
@@ -93,21 +104,28 @@ def _extract_hand_definition(h: Dict[str, Any]) -> Tuple[Dict[str, int], List[Li
         must = _dict_cards(h.get("must", {}))
         or_groups = h.get("or_groups", []) or []
         return must, or_groups
-    else:
-        # legacy
-        must = _dict_cards(h.get("cards", {}))
-        return must, []
+
+    # legacy
+    must = _dict_cards(h.get("cards", {}))
+    return must, []
 
 
 def _validate_ideal_hands_exist_in_deck(decklist: Dict[str, int], ideal_hands: List[Dict[str, Any]]) -> None:
+    """
+    Validation rule:
+    - OK if a deck card has count 0 (still exists as a key).
+    - Only error on truly unknown names (typos).
+    """
     deck_cards = set(decklist.keys()) | {"__blank__"}
     unknown = set()
 
     for h in ideal_hands:
         must, or_groups = _extract_hand_definition(h)
+
         for card in must.keys():
             if card not in deck_cards:
                 unknown.add(card)
+
         for group in (or_groups or []):
             for option in (group or []):
                 for card in _dict_cards(option).keys():
@@ -116,6 +134,16 @@ def _validate_ideal_hands_exist_in_deck(decklist: Dict[str, int], ideal_hands: L
 
     if unknown:
         raise ValueError(f"ideal_hands contains unknown cards: {sorted(unknown)}")
+
+
+def _infer_trap_names(handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]]) -> List[str]:
+    traps = set()
+    for _hid, effects in (handtrap_effects or {}).items():
+        for t in (effects or {}).keys():
+            traps.add(t)
+    # ensure draw traps appear even if not used yet
+    traps |= set(DRAW_TRAPS)
+    return sorted(traps)
 
 
 def simulate_opening_stats(
@@ -128,7 +156,18 @@ def simulate_opening_stats(
     fill_blanks: bool = True,
     chunk_size: int = 10_000,
     progress_cb: Optional[Callable[[int, int], None]] = None,  # (done, total)
+    trap_names: Optional[List[str]] = None,  # if None -> inferred from handtrap_effects
 ) -> Dict[str, Any]:
+    """
+    Computes (best-line per opening hand):
+      - probability to open ANY ideal hand
+      - per-ideal-hand probability (counts only chosen best line)
+      - per-handtrap:
+          * mean value INCLUDING zeros (impact or draws)
+          * distribution: % of 0/1/2/3/4 (or 0..4 draws)
+          * summary buckets for impact traps: stop / weaken / no-effect
+    """
+
     if num_hands <= 0:
         raise ValueError("num_hands must be > 0")
 
@@ -139,19 +178,26 @@ def simulate_opening_stats(
     if hand_size > len(deck):
         raise ValueError("Hand size larger than deck size.")
 
-    # Preprocess ideal hands into (id, name, must, or_groups)
-    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]]]] = []
+    # traps to report
+    if trap_names is None:
+        trap_names = _infer_trap_names(handtrap_effects)
+
+    # Preprocess ideal hands into (id, name, must, or_groups, base_score)
+    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int]] = []
     for h in ideal_hands:
         hid = str(h.get("id", "")).strip() or f"hand_{len(hands_pre)+1}"
         name = str(h.get("name", hid)).strip() or hid
         must, or_groups = _extract_hand_definition(h)
-        hands_pre.append((hid, name, must, or_groups))
+        base_score = int(h.get("base_score", 0))
+        hands_pre.append((hid, name, must, or_groups, base_score))
 
     hits_any = 0
     hits_by_hand = Counter()
 
-    trap_sum = Counter()
-    trap_count = Counter()
+    # Distribution tracking, conditioned on "we have a best line" (good opening)
+    # trap_hist[trap] = Counter(value -> count)
+    trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
+    trap_sum_all = Counter()  # sum of values over good openings (includes zeros)
 
     total = num_hands
     done = 0
@@ -164,43 +210,60 @@ def simulate_opening_stats(
             hand = random.sample(deck, hand_size)
             hc = Counter(hand)
 
-            matched_ids = []
-            for hid, _name, must, or_groups in hands_pre:
-                # match: must AND all OR-groups satisfied
-                if _matches_required(hc, must) and _matches_or_groups(hc, or_groups):
-                    # IMPORTANT: if both must and or_groups are empty, ignore (avoid matching everything)
-                    if must or (or_groups and any(or_groups)):
-                        matched_ids.append(hid)
+            best_id = None
+            best_score = None
 
-            if not matched_ids:
+            for hid, _name, must, or_groups, base_score in hands_pre:
+                if _matches_required(hc, must) and _matches_or_groups(hc, or_groups):
+                    if not (must or (or_groups and any(or_groups))):
+                        continue
+                    if best_score is None or base_score > best_score:
+                        best_score = base_score
+                        best_id = hid
+
+            if best_id is None:
                 continue
 
             hits_any += 1
-            for hid in matched_ids:
-                hits_by_hand[hid] += 1
+            hits_by_hand[best_id] += 1
 
-                effects = handtrap_effects.get(hid, {}) or {}
-                for trap_name, eff in effects.items():
-                    mode = (eff.get("mode") or "none").lower()
-                    val = int(eff.get("value") or 0)
-                    if mode == "none" or val <= 0:
-                        continue
+            effects = handtrap_effects.get(best_id, {}) or {}
 
-                    # normalize mode by trap type
-                    if trap_name in DRAW_TRAPS:
-                        mode = "draws"
-                    else:
-                        mode = "impact"
+            # For every trap, record a value (default 0) for this opening.
+            for t in trap_names:
+                eff = effects.get(t)
+                val = 0
+                if eff:
+                    # accept stored value; mode is normalized by trap type
+                    try:
+                        val = int(eff.get("value") or 0)
+                    except Exception:
+                        val = 0
 
-                    trap_sum[trap_name] += val
-                    trap_count[trap_name] += 1
+                # clamp to expected ranges for nicer histograms
+                if t in DRAW_TRAPS:
+                    # draws: 0..4 (GUI usually uses 0..4)
+                    if val < 0:
+                        val = 0
+                    if val > 4:
+                        val = 4
+                else:
+                    # impact: 0..4
+                    if val < 0:
+                        val = 0
+                    if val > 4:
+                        val = 4
+
+                trap_hist[t][val] += 1
+                trap_sum_all[t] += val
 
         done += this_chunk
         if progress_cb:
             progress_cb(done, total)
 
+    # per ideal hand results (best-line only)
     per_hand = []
-    for hid, name, _must, _or_groups in hands_pre:
+    for hid, name, _must, _or_groups, _score in hands_pre:
         cnt = hits_by_hand[hid]
         per_hand.append({
             "id": hid,
@@ -209,21 +272,59 @@ def simulate_opening_stats(
             "hit_count": int(cnt),
         })
 
-    trap_means = {}
-    for trap_name, total_val in trap_sum.items():
-        n = trap_count[trap_name]
-        trap_means[trap_name] = {
-            "mode": "draws" if trap_name in DRAW_TRAPS else "impact",
-            "mean": (total_val / n) if n else 0.0,
-            "samples": int(n),
-        }
+    # trap stats
+    trap_stats = {}
+    good_openings = hits_any  # denominator for trap distributions
+    for t in trap_names:
+        hist = trap_hist[t]
+        denom = good_openings if good_openings > 0 else 1
+
+        # ensure 0..4 keys exist
+        for k in range(5):
+            hist.setdefault(k, 0)
+
+        perc = {k: (hist[k] / denom) for k in range(5)}
+        mean_all = (trap_sum_all[t] / denom) if good_openings > 0 else 0.0
+
+        if t in DRAW_TRAPS:
+            trap_stats[t] = {
+                "mode": "draws",
+                "mean": mean_all,
+                "counts": dict(sorted(hist.items())),
+                "percents": {k: perc[k] for k in range(5)},
+                "samples": int(good_openings),
+            }
+        else:
+            stop = hist[4]
+            weaken = hist[1] + hist[2] + hist[3]
+            noeff = hist[0]
+            trap_stats[t] = {
+                "mode": "impact",
+                "mean": mean_all,
+                "counts": dict(sorted(hist.items())),
+                "percents": {k: perc[k] for k in range(5)},
+                "samples": int(good_openings),
+                "stop_percent": stop / denom,
+                "weaken_percent": weaken / denom,
+                "no_effect_percent": noeff / denom,
+                "stop_count": int(stop),
+                "weaken_count": int(weaken),
+                "no_effect_count": int(noeff),
+            }
 
     return {
         "hands_simulated": int(num_hands),
         "goingfirst": bool(goingfirst),
         "hand_size": int(hand_size),
+
+        # unconditional on all openings
         "opening_probability_any_ideal_hand": hits_any / num_hands,
         "any_hit_count": int(hits_any),
+
+        # best-line breakdown
         "per_ideal_hand": per_hand,
-        "trap_means": trap_means,
+
+        # trap distributions conditioned on good openings (best line exists)
+        "trap_stats": trap_stats,
+        "trap_samples": int(good_openings),
     }

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "decklist": {
-    "shiina": 3,
+    "shiina": 2,
     "krosea": 3,
     "eldam": 3,
     "swen": 3,
@@ -11,11 +11,11 @@
     "ascendance": 2,
     "the fallen": 3,
     "crown": 3,
-    "shield bearer": 1,
-    "dropplet": 1,
+    "shield bearer": 2,
+    "dropplet": 3,
     "calledby": 1,
     "mandate": 1,
-    "meghala": 3,
+    "meghala": 2,
     "fonix": 1,
     "vortex": 1,
     "manifestation": 1,
@@ -23,7 +23,7 @@
   },
   "ideal_hands": [
     {
-      "id": "H1",
+      "id": "H01",
       "name": "2C - krosea",
       "base_score": 0,
       "must": {
@@ -44,7 +44,7 @@
       ]
     },
     {
-      "id": "H3",
+      "id": "H03",
       "name": "2C - meghala",
       "base_score": 0,
       "must": {
@@ -65,7 +65,7 @@
       ]
     },
     {
-      "id": "H4",
+      "id": "H04",
       "name": "1C - chant",
       "base_score": 0,
       "must": {
@@ -74,9 +74,9 @@
       "or_groups": []
     },
     {
-      "id": "H5",
+      "id": "H05",
       "name": "1C - eldam",
-      "base_score": 0,
+      "base_score": 2,
       "must": {},
       "or_groups": [
         [
@@ -90,10 +90,62 @@
       ]
     },
     {
-      "id": "H6",
+      "id": "H06",
       "name": "1C - swen",
-      "base_score": 0,
+      "base_score": 1,
       "must": {},
+      "or_groups": [
+        [
+          {
+            "tenki": 1
+          },
+          {
+            "swen": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H07",
+      "name": "2C - manifestation",
+      "base_score": 0,
+      "must": {
+        "ascendance": 1,
+        "manifestation": 1
+      },
+      "or_groups": []
+    },
+    {
+      "id": "H09",
+      "name": "2C - swen-eldam",
+      "base_score": 5,
+      "must": {},
+      "or_groups": [
+        [
+          {
+            "swen": 1
+          },
+          {
+            "tenki": 1
+          }
+        ],
+        [
+          {
+            "shield bearer": 1
+          },
+          {
+            "eldam": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H10",
+      "name": "2C - swen-chant",
+      "base_score": 4,
+      "must": {
+        "chant": 1
+      },
       "or_groups": [
         [
           {
@@ -106,23 +158,343 @@
       ]
     },
     {
-      "id": "H7",
-      "name": "2C - manifestation",
-      "base_score": 0,
+      "id": "H11",
+      "name": "2C - eldam-chant",
+      "base_score": 4,
       "must": {
-        "ascendance": 1,
-        "manifestation": 1
+        "chant": 1
       },
-      "or_groups": []
+      "or_groups": [
+        [
+          {
+            "eldam": 1
+          },
+          {
+            "shield bearer": 1
+          }
+        ]
+      ]
     }
   ],
   "handtrap_effects": {
-    "H1": {},
-    "H3": {},
-    "H4": {},
-    "H5": {},
-    "H6": {},
-    "H7": {}
+    "H1": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H3": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 2
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H4": {
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H5": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H6": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H7": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H9": {
+      "ash": {
+        "mode": "impact",
+        "value": 1
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 1
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 1
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 2
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 1
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 1
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 1
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H10": {
+      "ash": {
+        "mode": "impact",
+        "value": 1
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 1
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 1
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 2
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 1
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 1
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H11": {
+      "ash": {
+        "mode": "impact",
+        "value": 1
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 1
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 1
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 2
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 1
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 1
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    }
   },
-  "id_counter": 8
+  "id_counter": 12
 }

@@ -13,14 +13,14 @@ import copy
 HANDTRAPS = [
     "nibiru", "ash", "imperm", "veiler", "belle", "mourner", "impulse", "purge", "fuwa", "purulia"
 ]
-DRAW_TRAPS = {"fuwa", "purulia"}  # these use draws instead of impact
+DRAW_HANDTRAPS = {"fuwa", "purulia"}
 
 IMPACT_LABELS = {
-    0: "0 – egal",
-    1: "1 – leicht schlechter",
-    2: "2 – merklich schlechter",
-    3: "3 – fast gestoppt",
-    4: "4 – gestoppt",
+    0: "0 - egal",
+    1: "1 - leicht schlechter",
+    2: "2 - merklich schlechter",
+    3: "3 - fast gestoppt",
+    4: "4 - gestoppt",
 }
 
 
@@ -345,7 +345,7 @@ class DeckToolApp(tk.Tk):
         self._refresh_hands_list()
 
     def _hand_display_name(self, hand: IdealHand) -> str:
-        return f"{hand.id} — {hand.name}"
+        return f"{hand.id} - {hand.name}"
 
     def _refresh_hands_list(self):
         # keep current selection if possible
@@ -353,7 +353,7 @@ class DeckToolApp(tk.Tk):
         selected_id = None
         if cur:
             label = self.hands_list.get(cur[0])
-            selected_id = label.split(" — ", 1)[0].strip()
+            selected_id = label.split(" - ", 1)[0].strip()
 
         self.hands_list.delete(0, tk.END)
         for hand in sorted(self.ideal_hands.values(), key=lambda h: (h.id, h.name.lower())):
@@ -361,7 +361,7 @@ class DeckToolApp(tk.Tk):
 
         if selected_id:
             for i in range(self.hands_list.size()):
-                if self.hands_list.get(i).startswith(selected_id + " — "):
+                if self.hands_list.get(i).startswith(selected_id + " - "):
                     self.hands_list.selection_set(i)
                     break
 
@@ -374,12 +374,12 @@ class DeckToolApp(tk.Tk):
         if hand is None:
             return
 
-        new_id = f"H{self._id_counter}"
+        new_id = f"H{self._id_counter:02d}"
         self._id_counter += 1
 
         new_hand = IdealHand(
             id=new_id,
-            name=f"Copy - {hand.name}",
+            name = f"{hand.name.split('-', 1)[-1].strip()} - Copy",
             base_score=int(hand.base_score),
             must=copy.deepcopy(hand.must),
             or_groups=copy.deepcopy(hand.or_groups),
@@ -394,7 +394,7 @@ class DeckToolApp(tk.Tk):
 
         # direkt selektieren
         for i in range(self.hands_list.size()):
-            if self.hands_list.get(i).startswith(new_id + " — "):
+            if self.hands_list.get(i).startswith(new_id + " - "):
                 self.hands_list.selection_clear(0, tk.END)
                 self.hands_list.selection_set(i)
                 self.hands_list.event_generate("<<ListboxSelect>>")
@@ -484,7 +484,7 @@ class DeckToolApp(tk.Tk):
         if not cur:
             return None
         label = self.hands_list.get(cur[0])
-        hand_id = label.split(" — ", 1)[0].strip()
+        hand_id = label.split(" - ", 1)[0].strip()
         return self.ideal_hands.get(hand_id)
 
     def _load_hand_into_editor(self, hand: IdealHand):
@@ -509,7 +509,7 @@ class DeckToolApp(tk.Tk):
         self._refresh_hands_list()
         # select it
         for i in range(self.hands_list.size()):
-            if self.hands_list.get(i).startswith(hand.id + " — "):
+            if self.hands_list.get(i).startswith(hand.id + " - "):
                 self.hands_list.selection_clear(0, tk.END)
                 self.hands_list.selection_set(i)
                 self.hands_list.event_generate("<<ListboxSelect>>")
@@ -624,7 +624,7 @@ class DeckToolApp(tk.Tk):
 
             ttk.Label(row, text=trap, width=12).grid(row=0, column=0, sticky="w")
 
-            if trap in DRAW_TRAPS:
+            if trap in DRAW_HANDTRAPS:
                 # draws
                 var = tk.IntVar(value=0)
                 spin = ttk.Spinbox(row, from_=0, to=4, textvariable=var, width=6)
@@ -638,7 +638,7 @@ class DeckToolApp(tk.Tk):
                     row,
                     state="readonly",
                     width=22,
-                    values=[f"{k} – {IMPACT_LABELS[k].split('–',1)[1].strip()}" for k in range(5)]
+                    values=[f"{k} - {IMPACT_LABELS[k].split('-',1)[1].strip()}" for k in range(5)]
                 )
                 cb.current(0)
                 cb.grid(row=0, column=1, sticky="w", padx=(8, 0))
@@ -665,14 +665,14 @@ class DeckToolApp(tk.Tk):
         if hand is None:
             self.trap_info_label.config(text="(Keine Hand ausgewählt)")
             return
-        self.trap_info_label.config(text=f"Hand: {hand.id} — {hand.name} | Base Score: {hand.base_score}")
+        self.trap_info_label.config(text=f"Hand: {hand.id} - {hand.name} | Base Score: {hand.base_score}")
         self._trap_load_effects_into_widgets(hand.id)
 
     def _trap_get_selected_hand(self) -> IdealHand | None:
         label = self.trap_hand_pick.get().strip()
         if not label:
             return None
-        hand_id = label.split(" — ", 1)[0].strip()
+        hand_id = label.split(" - ", 1)[0].strip()
         return self.ideal_hands.get(hand_id)
 
     def _trap_load_effects_into_widgets(self, hand_id: str):
@@ -680,7 +680,7 @@ class DeckToolApp(tk.Tk):
         for trap in HANDTRAPS:
             eff = effects.get(trap, {"mode": "none", "value": 0})
 
-            if trap in DRAW_TRAPS:
+            if trap in DRAW_HANDTRAPS:
                 # set draws
                 val = int(eff.get("value", 0)) if eff.get("mode") == "draws" else 0
                 self.trap_widgets[trap]["var"].set(val)
@@ -704,7 +704,7 @@ class DeckToolApp(tk.Tk):
         effects = self.handtrap_effects.setdefault(hand_id, {})
 
         for trap in HANDTRAPS:
-            if trap in DRAW_TRAPS:
+            if trap in DRAW_HANDTRAPS:
                 draws = int(self.trap_widgets[trap]["var"].get())
                 if draws <= 0:
                     effects.pop(trap, None)
@@ -922,13 +922,23 @@ class DeckToolApp(tk.Tk):
             )
 
         # trap means
-        trap_means = report["trap_means"]
-        for trap in sorted(trap_means.keys()):
-            t = trap_means[trap]
-            self.sim_trap_tree.insert(
-                "", "end",
-                values=(trap, t["mode"], f"{t['mean']:.3f}", t["samples"])
-            )
+        trap_stats = report["trap_stats"]
+        for trap in sorted(trap_stats.keys()):
+            t = trap_stats[trap]
+            if t["mode"] == "impact":
+                self.sim_trap_tree.insert(
+                    "", "end",
+                    values=(trap, "impact", f"{t['mean']:.3f}",
+                            f"stop {t['stop_percent']:.1%} / weak {t['weaken_percent']:.1%} / no {t['no_effect_percent']:.1%}")
+                )
+            else:
+                # draws: zeig z.B. P(1)/P(2)/P(3)
+                p = t["percents"]
+                self.sim_trap_tree.insert(
+                    "", "end",
+                    values=(trap, "draws", f"{t['mean']:.3f}",
+                            f"P1 {p[1]:.1%} P2 {p[2]:.1%} P3 {p[3]:.1%}")
+                )
 
     # ----------------------------
     # Project I/O
@@ -1007,7 +1017,7 @@ class DeckToolApp(tk.Tk):
                 data = json.load(f)
             self._load_project_dict(data)
             self.current_file = path
-            self.title(f"Deck Tool (MVP) — {os.path.basename(path)}")
+            self.title(f"Deck Tool (MVP) - {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Datei nicht öffnen:\n{e}")
 
@@ -1031,7 +1041,7 @@ class DeckToolApp(tk.Tk):
             return
         self.current_file = path
         self.save_project()
-        self.title(f"Deck Tool (MVP) — {os.path.basename(path)}")
+        self.title(f"Deck Tool (MVP) - {os.path.basename(path)}")
 
 
 if __name__ == "__main__":

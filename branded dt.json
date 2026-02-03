@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "decklist": {
+    "lukias": 3,
+    "mululu": 1,
+    "urgula": 2,
+    "pan": 1,
+    "phryxl": 1,
+    "faimena": 3,
+    "albaz white": 3,
+    "ecclesia": 1,
+    "cartesia": 1,
+    "branded fusion": 2,
+    "rahu": 3,
+    "ketu": 1,
+    "the fallen & the virtous": 2,
+    "sting": 1,
+    "flame": 1,
+    "horn": 1,
+    "ash blossom": 3,
+    "belle": 3,
+    "fuwa": 3,
+    "purulia": 3
+  },
+  "ideal_hands": [
+    {
+      "id": "H01",
+      "name": "1C - albaz white",
+      "base_score": 0,
+      "must": {
+        "albaz white": 1
+      },
+      "or_groups": []
+    },
+    {
+      "id": "H02",
+      "name": "1C - ecclesia",
+      "base_score": 0,
+      "must": {
+        "ecclesia": 1
+      },
+      "or_groups": []
+    },
+    {
+      "id": "H03",
+      "name": "1C - branded fusion",
+      "base_score": 0,
+      "must": {
+        "branded fusion": 1
+      },
+      "or_groups": []
+    },
+    {
+      "id": "H04",
+      "name": "2C - cartesia",
+      "base_score": 0,
+      "must": {
+        "cartesia": 1
+      },
+      "or_groups": [
+        [
+          {
+            "rahu": 1
+          },
+          {
+            "ketu": 1
+          },
+          {
+            "mululu": 1
+          },
+          {
+            "lukias": 1
+          },
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H05",
+      "name": "2C - rahu",
+      "base_score": 0,
+      "must": {
+        "rahu": 1
+      },
+      "or_groups": [
+        [
+          {
+            "ketu": 1
+          },
+          {
+            "ash blossom": 1
+          },
+          {
+            "belle": 1
+          },
+          {
+            "fuwa": 1
+          },
+          {
+            "purulia": 1
+          },
+          {
+            "mululu": 1
+          },
+          {
+            "lukias": 1
+          },
+          {
+            "faimena": 1
+          },
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          },
+          {
+            "phryxl": 1
+          },
+          {
+            "cartesia": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H06",
+      "name": "2C - ketu",
+      "base_score": 0,
+      "must": {
+        "ketu": 1
+      },
+      "or_groups": [
+        [
+          {
+            "ash blossom": 1
+          },
+          {
+            "belle": 1
+          },
+          {
+            "fuwa": 1
+          },
+          {
+            "purulia": 1
+          },
+          {
+            "mululu": 1
+          },
+          {
+            "lukias": 1
+          },
+          {
+            "faimena": 1
+          },
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          },
+          {
+            "phryxl": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H07",
+      "name": "2C - ht",
+      "base_score": 0,
+      "must": {},
+      "or_groups": [
+        [
+          {
+            "ash blossom": 1
+          },
+          {
+            "belle": 1
+          },
+          {
+            "fuwa": 1
+          },
+          {
+            "purulia": 1
+          }
+        ],
+        [
+          {
+            "lukias": 1
+          },
+          {
+            "mululu": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H08",
+      "name": "2C - mululu",
+      "base_score": 0,
+      "must": {
+        "mululu": 1
+      },
+      "or_groups": [
+        [
+          {
+            "lukias": 1
+          },
+          {
+            "faimena": 1
+          },
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          },
+          {
+            "phryxl": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H09",
+      "name": "2C - lukias",
+      "base_score": 0,
+      "must": {
+        "lukias": 1
+      },
+      "or_groups": [
+        [
+          {
+            "faimena": 1
+          },
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          },
+          {
+            "phryxl": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H10",
+      "name": "3C - faimena",
+      "base_score": 0,
+      "must": {
+        "faimena": 1
+      },
+      "or_groups": [
+        [
+          {
+            "pan": 1
+          },
+          {
+            "urgula": 1
+          }
+        ],
+        [
+          {
+            "ash blossom": 1
+          },
+          {
+            "belle": 1
+          },
+          {
+            "fuwa": 1
+          },
+          {
+            "purulia": 1
+          },
+          {
+            "phryxl": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H11",
+      "name": "3C - cartesia",
+      "base_score": 0,
+      "must": {
+        "cartesia": 1,
+        "phryxl": 1
+      },
+      "or_groups": [
+        [
+          {
+            "ash blossom": 1
+          },
+          {
+            "belle": 1
+          },
+          {
+            "fuwa": 1
+          },
+          {
+            "purulia": 1
+          },
+          {
+            "faimena": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H12",
+      "name": "3C - cartesia-2",
+      "base_score": 0,
+      "must": {
+        "cartesia": 1,
+        "faimena": 2
+      },
+      "or_groups": []
+    }
+  ],
+  "handtrap_effects": {
+    "H1": {},
+    "H2": {},
+    "H3": {},
+    "H4": {},
+    "H5": {},
+    "H6": {},
+    "H7": {},
+    "H8": {},
+    "H9": {},
+    "H10": {},
+    "H11": {},
+    "H12": {}
+  },
+  "id_counter": 13
+}
