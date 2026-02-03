@@ -177,7 +177,7 @@
     }
   ],
   "handtrap_effects": {
-    "H1": {
+    "H01": {
       "ash": {
         "mode": "impact",
         "value": 4
@@ -211,7 +211,7 @@
         "value": 2
       }
     },
-    "H3": {
+    "H03": {
       "ash": {
         "mode": "impact",
         "value": 4
@@ -249,7 +249,7 @@
         "value": 2
       }
     },
-    "H4": {
+    "H04": {
       "imperm": {
         "mode": "impact",
         "value": 4
@@ -275,45 +275,7 @@
         "value": 2
       }
     },
-    "H5": {
-      "ash": {
-        "mode": "impact",
-        "value": 4
-      },
-      "imperm": {
-        "mode": "impact",
-        "value": 4
-      },
-      "veiler": {
-        "mode": "impact",
-        "value": 4
-      },
-      "belle": {
-        "mode": "impact",
-        "value": 4
-      },
-      "mourner": {
-        "mode": "impact",
-        "value": 4
-      },
-      "impulse": {
-        "mode": "impact",
-        "value": 4
-      },
-      "purge": {
-        "mode": "impact",
-        "value": 4
-      },
-      "fuwa": {
-        "mode": "draws",
-        "value": 1
-      },
-      "purulia": {
-        "mode": "draws",
-        "value": 2
-      }
-    },
-    "H6": {
+    "H05": {
       "ash": {
         "mode": "impact",
         "value": 4
@@ -351,7 +313,7 @@
         "value": 2
       }
     },
-    "H7": {
+    "H06": {
       "ash": {
         "mode": "impact",
         "value": 4
@@ -389,7 +351,45 @@
         "value": 2
       }
     },
-    "H9": {
+    "H07": {
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "fuwa": {
+        "mode": "draws",
+        "value": 1
+      },
+      "purulia": {
+        "mode": "draws",
+        "value": 2
+      }
+    },
+    "H09": {
       "ash": {
         "mode": "impact",
         "value": 1
