@@ -33,15 +33,6 @@
       "or_groups": []
     },
     {
-      "id": "H02",
-      "name": "1C - ecclesia",
-      "base_score": 0,
-      "must": {
-        "ecclesia": 1
-      },
-      "or_groups": []
-    },
-    {
       "id": "H03",
       "name": "1C - branded fusion",
       "base_score": 0,
@@ -327,7 +318,6 @@
   ],
   "handtrap_effects": {
     "H01": {},
-    "H02": {},
     "H03": {},
     "H04": {},
     "H05": {},
