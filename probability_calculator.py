@@ -1,80 +1,229 @@
-from helpers import combination
+import random
+from collections import Counter
+from typing import Dict, List, Any, Tuple, Optional, Callable
 
-class ProbabilityCalculator:
-    def __init__(self, deck_manager):
-        self.deck_manager = deck_manager
+DRAW_TRAPS = {"fuwa", "purulia"}
 
-    def probability_card_in_hand(self, deck_size, hand_size, card_name):
-        card_data = self.deck_manager.deck
-        total_card_count = self.get_card_count(card_name, card_data)
-        return self.prob_card_in_hand(total_card_count, deck_size, hand_size)
 
-    def get_card_count(self, card_name, card_data):
-        def tree_find(cardname, visited):
-            local_count = 0
-            if cardname in visited:
-                return 0
+def _normalize_deck(decklist: Dict[str, int], deckcount: Optional[int] = None, fill_blanks: bool = True) -> List[str]:
+    dl = dict(decklist)
+    dl.pop("__blank__", None)
 
-            visited.add(cardname)
-            
-            for card in card_data:
-                if card["name"] == cardname:
-                    local_count += card["anzahl"]
-                if cardname in card.get("search_cards", []):
-                    local_count += tree_find(card["name"], visited)
-            return local_count
+    used = sum(v for v in dl.values() if v > 0)
+    if deckcount is None:
+        deckcount = used
 
-        card = next((card for card in card_data if card["name"] == card_name), None)
-    
-        if card and "Engine-Requirement" not in card.get("tags", []):
-            total_card_count = tree_find(card_name, set())
-        elif card:
-            total_card_count = card["anzahl"]
-        else:
-            total_card_count = 0
-        
-        return total_card_count
+    if used > deckcount:
+        deckcount = used
 
-    def prob_card_in_hand(self, card_count, deck_size, hand_size):
-        prob_no_card_in_hand = combination(deck_size - card_count, hand_size) / combination(deck_size, hand_size)
-        return 1 - prob_no_card_in_hand
+    if used < deckcount and fill_blanks:
+        dl["__blank__"] = deckcount - used
 
-    def probability_only_tags(self, deck_size, hand_size, tags):
-        num_cards_with_tags = 0
-        for card in self.deck_manager.deck:
-            if all(tag in card.get("tags", []) for tag in tags):
-                num_cards_with_tags += card["anzahl"]
+    deck = []
+    for name, cnt in dl.items():
+        if cnt < 0:
+            raise ValueError(f"negative count for {name}: {cnt}")
+        if cnt == 0:
+            continue
+        deck.extend([name] * cnt)
 
-        searchable_cards = set()
-        for card in self.deck_manager.deck:
-            if "Search" in card.get("tags", []):
-                searchable_cards.update(card.get("search_cards", []))
+    if len(deck) < 5:
+        raise ValueError("Deck has fewer than 5 cards; cannot draw an opening hand.")
 
-        num_searchable_cards = sum(
-            card["anzahl"] for card in self.deck_manager.deck if card["name"] in searchable_cards
-        )
-        
-        total_cards_with_tags = num_cards_with_tags + num_searchable_cards
-        
-        prob_all_with_tags = (combination(total_cards_with_tags, hand_size) /
-                            combination(deck_size, hand_size))
-        
-        return prob_all_with_tags
-    
-    def calculate_single_card_probability(self):
-        card_name = self.selected_card.get().split(' (')[0]
-        if not card_name:
-            return ("Fehler", "Bitte wählen Sie eine Karte aus.")
+    return deck
 
-        deck_size = sum(card["anzahl"] for card in self.deck)
-        probability = self.probability_card_in_hand(deck_size, 5, card_name, self.deck)
-        return ("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass {card_name} in der Starthand ist, beträgt {probability:.2%}")
 
-    def calculate_tags_probability(self):
-        selected_tags = [tag for tag, var in self.selected_tags if var.get()]
-        if not selected_tags:
-            return ("Fehler", "Bitte wählen Sie mindestens einen Tag aus.")
+def _dict_cards(cards: Dict[str, int] | None) -> Dict[str, int]:
+    """Sanitize {card:qty} dict."""
+    out: Dict[str, int] = {}
+    if not cards:
+        return out
+    for k, v in cards.items():
+        name = str(k).strip()
+        if not name:
+            continue
+        qty = int(v)
+        if qty <= 0:
+            continue
+        out[name] = qty
+    return out
 
-        deck_size = sum(card["anzahl"] for card in self.deck)
-        probability = self.probability_only_tags(deck_size, 5, selected_tags, self.deck)
-        return ("Wahrscheinlichkeit", f"Die Wahrscheinlichkeit, dass nur Karten mit den Tags {', '.join(selected_tags)} in der Starthand sind, beträgt {probability:.2%}")
+
+def _matches_required(hand_counts: Counter, required: Dict[str, int]) -> bool:
+    """AND match for a dict required."""
+    for card, need in required.items():
+        if hand_counts[card] < need:
+            return False
+    return True
+
+
+def _matches_or_groups(hand_counts: Counter, or_groups: List[List[Dict[str, int]]]) -> bool:
+    """
+    Each OR-group must have at least one option matched.
+    or_groups = [
+        [ {"chant":1}, {"ascendance":1}, ... ],   # group 1
+        [ {"x":1, "y":1}, {"z":1} ]               # group 2 (optional)
+    ]
+    """
+    if not or_groups:
+        return True
+
+    for group in or_groups:
+        if not group:
+            # empty group = ignore
+            continue
+        ok = False
+        for option in group:
+            opt = _dict_cards(option)
+            if opt and _matches_required(hand_counts, opt):
+                ok = True
+                break
+        if not ok:
+            return False
+    return True
+
+
+def _extract_hand_definition(h: Dict[str, Any]) -> Tuple[Dict[str, int], List[List[Dict[str, int]]]]:
+    """
+    Supports both old and new format:
+    - old: h["cards"]
+    - new: h["must"] and h["or_groups"]
+    """
+    if "must" in h or "or_groups" in h:
+        must = _dict_cards(h.get("must", {}))
+        or_groups = h.get("or_groups", []) or []
+        return must, or_groups
+    else:
+        # legacy
+        must = _dict_cards(h.get("cards", {}))
+        return must, []
+
+
+def _validate_ideal_hands_exist_in_deck(decklist: Dict[str, int], ideal_hands: List[Dict[str, Any]]) -> None:
+    deck_cards = set(decklist.keys()) | {"__blank__"}
+    unknown = set()
+
+    for h in ideal_hands:
+        must, or_groups = _extract_hand_definition(h)
+        for card in must.keys():
+            if card not in deck_cards:
+                unknown.add(card)
+        for group in (or_groups or []):
+            for option in (group or []):
+                for card in _dict_cards(option).keys():
+                    if card not in deck_cards:
+                        unknown.add(card)
+
+    if unknown:
+        raise ValueError(f"ideal_hands contains unknown cards: {sorted(unknown)}")
+
+
+def simulate_opening_stats(
+    decklist: Dict[str, int],
+    ideal_hands: List[Dict[str, Any]],
+    handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
+    deckcount: Optional[int] = None,
+    num_hands: int = 100_000,
+    goingfirst: bool = True,
+    fill_blanks: bool = True,
+    chunk_size: int = 10_000,
+    progress_cb: Optional[Callable[[int, int], None]] = None,  # (done, total)
+) -> Dict[str, Any]:
+    if num_hands <= 0:
+        raise ValueError("num_hands must be > 0")
+
+    _validate_ideal_hands_exist_in_deck(decklist, ideal_hands)
+    deck = _normalize_deck(decklist, deckcount=deckcount, fill_blanks=fill_blanks)
+
+    hand_size = 5 if goingfirst else 6
+    if hand_size > len(deck):
+        raise ValueError("Hand size larger than deck size.")
+
+    # Preprocess ideal hands into (id, name, must, or_groups)
+    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]]]] = []
+    for h in ideal_hands:
+        hid = str(h.get("id", "")).strip() or f"hand_{len(hands_pre)+1}"
+        name = str(h.get("name", hid)).strip() or hid
+        must, or_groups = _extract_hand_definition(h)
+        hands_pre.append((hid, name, must, or_groups))
+
+    hits_any = 0
+    hits_by_hand = Counter()
+
+    trap_sum = Counter()
+    trap_count = Counter()
+
+    total = num_hands
+    done = 0
+    chunk_size = max(1, int(chunk_size))
+
+    while done < total:
+        this_chunk = min(chunk_size, total - done)
+
+        for _ in range(this_chunk):
+            hand = random.sample(deck, hand_size)
+            hc = Counter(hand)
+
+            matched_ids = []
+            for hid, _name, must, or_groups in hands_pre:
+                # match: must AND all OR-groups satisfied
+                if _matches_required(hc, must) and _matches_or_groups(hc, or_groups):
+                    # IMPORTANT: if both must and or_groups are empty, ignore (avoid matching everything)
+                    if must or (or_groups and any(or_groups)):
+                        matched_ids.append(hid)
+
+            if not matched_ids:
+                continue
+
+            hits_any += 1
+            for hid in matched_ids:
+                hits_by_hand[hid] += 1
+
+                effects = handtrap_effects.get(hid, {}) or {}
+                for trap_name, eff in effects.items():
+                    mode = (eff.get("mode") or "none").lower()
+                    val = int(eff.get("value") or 0)
+                    if mode == "none" or val <= 0:
+                        continue
+
+                    # normalize mode by trap type
+                    if trap_name in DRAW_TRAPS:
+                        mode = "draws"
+                    else:
+                        mode = "impact"
+
+                    trap_sum[trap_name] += val
+                    trap_count[trap_name] += 1
+
+        done += this_chunk
+        if progress_cb:
+            progress_cb(done, total)
+
+    per_hand = []
+    for hid, name, _must, _or_groups in hands_pre:
+        cnt = hits_by_hand[hid]
+        per_hand.append({
+            "id": hid,
+            "name": name,
+            "opening_probability": cnt / num_hands,
+            "hit_count": int(cnt),
+        })
+
+    trap_means = {}
+    for trap_name, total_val in trap_sum.items():
+        n = trap_count[trap_name]
+        trap_means[trap_name] = {
+            "mode": "draws" if trap_name in DRAW_TRAPS else "impact",
+            "mean": (total_val / n) if n else 0.0,
+            "samples": int(n),
+        }
+
+    return {
+        "hands_simulated": int(num_hands),
+        "goingfirst": bool(goingfirst),
+        "hand_size": int(hand_size),
+        "opening_probability_any_ideal_hand": hits_any / num_hands,
+        "any_hit_count": int(hits_any),
+        "per_ideal_hand": per_hand,
+        "trap_means": trap_means,
+    }

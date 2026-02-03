@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "decklist": {
+    "shiina": 3,
+    "krosea": 3,
+    "eldam": 3,
+    "swen": 3,
+    "chant": 3,
+    "vision": 3,
+    "mst": 3,
+    "ascendance": 2,
+    "the fallen": 3,
+    "crown": 3,
+    "shield bearer": 1,
+    "dropplet": 1,
+    "calledby": 1,
+    "mandate": 1,
+    "meghala": 3,
+    "fonix": 1,
+    "vortex": 1,
+    "manifestation": 1,
+    "tenki": 1
+  },
+  "ideal_hands": [
+    {
+      "id": "H1",
+      "name": "2C - krosea",
+      "base_score": 0,
+      "must": {
+        "krosea": 1
+      },
+      "or_groups": [
+        [
+          {
+            "ascendance": 1
+          },
+          {
+            "manifestation": 1
+          },
+          {
+            "vision": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H3",
+      "name": "2C - meghala",
+      "base_score": 0,
+      "must": {
+        "meghala": 1
+      },
+      "or_groups": [
+        [
+          {
+            "ascendance": 1
+          },
+          {
+            "manifestation": 1
+          },
+          {
+            "vision": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H4",
+      "name": "1C - chant",
+      "base_score": 0,
+      "must": {
+        "chant": 1
+      },
+      "or_groups": []
+    },
+    {
+      "id": "H5",
+      "name": "1C - eldam",
+      "base_score": 0,
+      "must": {},
+      "or_groups": [
+        [
+          {
+            "eldam": 1
+          },
+          {
+            "shield bearer": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H6",
+      "name": "1C - swen",
+      "base_score": 0,
+      "must": {},
+      "or_groups": [
+        [
+          {
+            "swen": 1
+          },
+          {
+            "tenki": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H7",
+      "name": "2C - manifestation",
+      "base_score": 0,
+      "must": {
+        "ascendance": 1,
+        "manifestation": 1
+      },
+      "or_groups": []
+    }
+  ],
+  "handtrap_effects": {
+    "H1": {},
+    "H3": {},
+    "H4": {},
+    "H5": {},
+    "H6": {},
+    "H7": {}
+  },
+  "id_counter": 8
+}
