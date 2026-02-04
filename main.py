@@ -406,7 +406,7 @@ class DeckToolApp(tk.Tk):
         for idx, group in enumerate(hand.or_groups, start=1):
             opts = []
             for opt in group:
-                # opt ist dict: {card:qty, ...} – in MVP typischerweise 1 Karte
+                # opt ist dict: {card:qty, ...} - in MVP typischerweise 1 Karte
                 parts = [f"{c}({q})" for c, q in opt.items()]
                 opts.append(" & ".join(parts))
             self.or_tree.insert("", "end", values=(idx, " | ".join(opts)))
@@ -501,7 +501,7 @@ class DeckToolApp(tk.Tk):
             self.hand_cards_tree.insert("", "end", values=(card, qty))
 
     def hand_new(self):
-        new_id = f"H{self._id_counter}"
+        new_id = f"H{self._id_counter:02d}"
         self._id_counter += 1
         hand = IdealHand(id=new_id, name="New Hand", base_score=0, must={}, or_groups=[])
         self.ideal_hands[hand.id] = hand
@@ -629,7 +629,7 @@ class DeckToolApp(tk.Tk):
                 var = tk.IntVar(value=0)
                 spin = ttk.Spinbox(row, from_=0, to=4, textvariable=var, width=6)
                 spin.grid(row=0, column=1, sticky="w", padx=(8, 0))
-                ttk.Label(row, text="Draws gegeben (0–4)").grid(row=0, column=2, sticky="w", padx=(10, 0))
+                ttk.Label(row, text="Draws gegeben (0-4)").grid(row=0, column=2, sticky="w", padx=(10, 0))
                 self.trap_widgets[trap] = {"type": "draws", "var": var, "widget": spin}
             else:
                 # impact dropdown
@@ -688,8 +688,8 @@ class DeckToolApp(tk.Tk):
                 # set impact dropdown selection
                 val = int(eff.get("value", 0)) if eff.get("mode") == "impact" else 0
                 widget = self.trap_widgets[trap]["widget"]
-                # combobox values start with "0 – ..."
-                widget.set(f"{val} – {IMPACT_LABELS[val].split('–',1)[1].strip()}")
+                # combobox values start with "0 - ..."
+                widget.set(f"{val} - {IMPACT_LABELS[val].split('-',1)[1].strip()}")
 
     def _trap_set_value(self, trap: str, value: int):
         # store in var only; save happens via trap_save_current
