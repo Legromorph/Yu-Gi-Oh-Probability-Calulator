@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import os
+import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from ..models import IdealHand
+from ..models import IdealHand, DeckVariant, CardMeta
 from ..storage import project_to_dict, project_from_dict, load_project, save_project
-from ..utils import deck_size_positive, hand_display_name
+from ..utils import safe_sorted_cards
 
 from .tabs.deck_tab import DeckTab
 from .tabs.hands_tab import HandsTab
 from .tabs.traps_tab import TrapsTab
 from .tabs.sim_tab import SimTab
+from .tabs.optimize_tab import OptimizeTab
 
 
 class DeckToolMainWindow(tk.Tk):
@@ -29,9 +31,15 @@ class DeckToolMainWindow(tk.Tk):
         self.minsize(1100, 700)
 
         # Shared state
-        self.decklist: Dict[str, int] = {}
+        self.deck_variants: Dict[str, DeckVariant] = {}
+        self.deck_variant_order: List[str] = []
+        self.active_deck_id: str = ""
+        self._deck_id_counter: int = 1
+
+        self._ensure_default_deck()
         self.ideal_hands: Dict[str, IdealHand] = {}
         self.handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.card_meta: Dict[str, CardMeta] = {}
         self.current_file: Optional[str] = None
         self._id_counter: int = 1
 
@@ -47,11 +55,13 @@ class DeckToolMainWindow(tk.Tk):
         self.deck_tab = DeckTab(self)
         self.hands_tab = HandsTab(self)
         self.traps_tab = TrapsTab(self)
+        self.optimize_tab = OptimizeTab(self)
         self.sim_tab = SimTab(self)
 
         self.deck_tab.build(self.tab_deck)
         self.hands_tab.build(self.tab_hands)
         self.traps_tab.build(self.tab_traps)
+        self.optimize_tab.build(self.tab_optimize)
         self.sim_tab.build(self.tab_sim)
 
         self.refresh_all()
@@ -83,15 +93,70 @@ class DeckToolMainWindow(tk.Tk):
         self.tab_deck = ttk.Frame(self.notebook)
         self.tab_hands = ttk.Frame(self.notebook)
         self.tab_traps = ttk.Frame(self.notebook)
+        self.tab_optimize = ttk.Frame(self.notebook)
         self.tab_sim = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_deck, text="Deck")
         self.notebook.add(self.tab_hands, text="Ideal Hands")
         self.notebook.add(self.tab_traps, text="Handtraps")
+        self.notebook.add(self.tab_optimize, text="Optimize")
         self.notebook.add(self.tab_sim, text="Simulation")
 
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)
+
+    # -------------------------
+    # Deck variants
+    # -------------------------
+
+    def _ensure_default_deck(self) -> None:
+        if self.deck_variant_order:
+            return
+        self.add_deck_variant(name="Variant 1")
+
+    def _sync_deck_id_counter(self) -> None:
+        max_id = 0
+        for vid in self.deck_variant_order:
+            m = re.search(r"\d+", vid)
+            if m:
+                max_id = max(max_id, int(m.group(0)))
+        self._deck_id_counter = max_id + 1 if max_id > 0 else 1
+
+    def add_deck_variant(self, name: Optional[str] = None, cards: Optional[Dict[str, int]] = None) -> DeckVariant:
+        if name is None:
+            name = f"Variant {len(self.deck_variant_order) + 1}"
+        deck_id = f"D{self._deck_id_counter:02d}"
+        self._deck_id_counter += 1
+
+        variant = DeckVariant(id=deck_id, name=name, decklist=dict(cards or {}))
+        self.deck_variants[deck_id] = variant
+        self.deck_variant_order.append(deck_id)
+        self.active_deck_id = deck_id
+        return variant
+
+    def set_active_deck(self, deck_id: str) -> None:
+        if deck_id in self.deck_variants:
+            self.active_deck_id = deck_id
+
+    def get_active_deck(self) -> DeckVariant:
+        if self.active_deck_id in self.deck_variants:
+            return self.deck_variants[self.active_deck_id]
+        if self.deck_variant_order:
+            return self.deck_variants[self.deck_variant_order[0]]
+        self._ensure_default_deck()
+        return self.deck_variants[self.active_deck_id]
+
+    def get_active_decklist(self) -> Dict[str, int]:
+        return self.get_active_deck().decklist
+
+    def get_deck_variants_in_order(self) -> List[DeckVariant]:
+        return [self.deck_variants[vid] for vid in self.deck_variant_order]
+
+    def get_all_deck_cards(self) -> List[str]:
+        cards = set()
+        for dv in self.deck_variants.values():
+            cards.update(dv.decklist.keys())
+        return safe_sorted_cards(list(cards))
 
     # -------------------------
     # Selection helpers (BUGFIX)
@@ -121,6 +186,7 @@ class DeckToolMainWindow(tk.Tk):
         self.deck_tab.refresh()
         self.hands_tab.refresh()
         self.traps_tab.refresh()
+        self.optimize_tab.refresh()
         self.sim_tab.refresh()
 
     def refresh_hand_dependent_views(self) -> None:
@@ -162,9 +228,14 @@ class DeckToolMainWindow(tk.Tk):
             return
 
         self.current_file = None
-        self.decklist.clear()
+        self.deck_variants.clear()
+        self.deck_variant_order.clear()
+        self.active_deck_id = ""
+        self._deck_id_counter = 1
+        self._ensure_default_deck()
         self.ideal_hands.clear()
         self.handtrap_effects.clear()
+        self.card_meta.clear()
         self._id_counter = 1
 
         # clear selection
@@ -186,11 +257,19 @@ class DeckToolMainWindow(tk.Tk):
 
         try:
             data = load_project(path)
-            decklist, ideal_hands, handtrap_effects, id_counter = project_from_dict(data)
+            deck_variants, active_deck_id, card_meta, ideal_hands, handtrap_effects, id_counter = project_from_dict(data)
 
-            self.decklist = decklist
+            self.deck_variants = {dv.id: dv for dv in deck_variants}
+            self.deck_variant_order = [dv.id for dv in deck_variants]
+            self.active_deck_id = active_deck_id if active_deck_id in self.deck_variants else ""
+            if not self.active_deck_id and self.deck_variant_order:
+                self.active_deck_id = self.deck_variant_order[0]
+            if not self.active_deck_id:
+                self._ensure_default_deck()
+            self._sync_deck_id_counter()
             self.ideal_hands = ideal_hands
             self.handtrap_effects = handtrap_effects
+            self.card_meta = card_meta
             self._id_counter = id_counter
 
             self.current_file = path
@@ -211,7 +290,14 @@ class DeckToolMainWindow(tk.Tk):
             return self.save_project_as()
 
         try:
-            data = project_to_dict(self.decklist, self.ideal_hands, self.handtrap_effects, self._id_counter)
+            data = project_to_dict(
+                self.get_deck_variants_in_order(),
+                self.active_deck_id,
+                self.card_meta,
+                self.ideal_hands,
+                self.handtrap_effects,
+                self._id_counter,
+            )
             save_project(self.current_file, data)
             self._set_status(f"Saved: {self.current_file}")
             messagebox.showinfo("Saved", f"Project saved:\n{self.current_file}")

@@ -1,25 +1,183 @@
 {
-  "version": 1,
-  "decklist": {
-    "shiina": 2,
-    "krosea": 3,
-    "eldam": 3,
-    "swen": 3,
-    "chant": 3,
-    "vision": 3,
-    "mst": 3,
-    "ascendance": 2,
-    "the fallen": 3,
-    "crown": 3,
-    "shield bearer": 2,
-    "dropplet": 3,
-    "calledby": 1,
-    "mandate": 1,
-    "meghala": 2,
-    "fonix": 1,
-    "vortex": 1,
-    "manifestation": 1,
-    "tenki": 1
+  "version": 3,
+  "decklists": [
+    {
+      "id": "D01",
+      "name": "Variant 1",
+      "decklist": {
+        "shiina": 2,
+        "krosea": 3,
+        "eldam": 3,
+        "swen": 3,
+        "chant": 3,
+        "vision": 3,
+        "mst": 3,
+        "ascendance": 2,
+        "the fallen": 3,
+        "crown": 3,
+        "shield bearer": 2,
+        "dropplet": 3,
+        "calledby": 1,
+        "mandate": 1,
+        "meghala": 2,
+        "fonix": 1,
+        "vortex": 1,
+        "manifestation": 1,
+        "tenki": 1
+      }
+    },
+    {
+      "id": "D04",
+      "name": "Variant 2",
+      "decklist": {
+        "shiina": 2,
+        "krosea": 3,
+        "eldam": 3,
+        "swen": 3,
+        "chant": 3,
+        "vision": 3,
+        "mst": 3,
+        "ascendance": 2,
+        "the fallen": 3,
+        "crown": 3,
+        "shield bearer": 2,
+        "dropplet": 3,
+        "calledby": 1,
+        "mandate": 1,
+        "meghala": 2,
+        "fonix": 1,
+        "vortex": 1,
+        "manifestation": 1,
+        "tenki": 1,
+        "ash blossom": 3
+      }
+    }
+  ],
+  "active_deck_id": "D01",
+  "card_meta": {
+    "shiina": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "krosea": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "eldam": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "swen": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "chant": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "vision": {
+      "tags": [
+        "engine"
+      ],
+      "draw_effect": {
+        "draw": 2,
+        "cost_mode": "discard",
+        "cost_count": 1,
+        "cost_cards": [
+          "ascendance",
+          "calledby",
+          "chant",
+          "crown",
+          "dropplet",
+          "eldam",
+          "fonix",
+          "krosea",
+          "mandate",
+          "manifestation",
+          "meghala",
+          "mst",
+          "swen",
+          "the fallen",
+          "vision",
+          "vortex"
+        ]
+      }
+    },
+    "mst": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "ascendance": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "the fallen": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "crown": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "shield bearer": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "dropplet": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "calledby": {
+      "tags": [
+        "non-engine"
+      ]
+    },
+    "mandate": {
+      "tags": [
+        "brick"
+      ]
+    },
+    "meghala": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "fonix": {
+      "tags": [
+        "brick"
+      ]
+    },
+    "vortex": {
+      "tags": [
+        "brick"
+      ]
+    },
+    "manifestation": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "tenki": {
+      "tags": [
+        "engine"
+      ]
+    },
+    "ash blossom": {
+      "tags": [
+        "non-engine"
+      ]
+    }
   },
   "ideal_hands": [
     {
@@ -171,6 +329,84 @@
           },
           {
             "shield bearer": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H12",
+      "name": "2C - called by",
+      "base_score": 10,
+      "must": {
+        "calledby": 1
+      },
+      "or_groups": [
+        [
+          {
+            "__hand__:H01": 1
+          },
+          {
+            "__hand__:H03": 1
+          },
+          {
+            "__hand__:H04": 1
+          },
+          {
+            "__hand__:H05": 1
+          },
+          {
+            "__hand__:H06": 1
+          },
+          {
+            "__hand__:H07": 1
+          },
+          {
+            "__hand__:H09": 1
+          },
+          {
+            "__hand__:H10": 1
+          },
+          {
+            "__hand__:H11": 1
+          }
+        ]
+      ]
+    },
+    {
+      "id": "H13",
+      "name": "2C - ash blossom",
+      "base_score": 10,
+      "must": {
+        "ash blossom": 1
+      },
+      "or_groups": [
+        [
+          {
+            "__hand__:H01": 1
+          },
+          {
+            "__hand__:H03": 1
+          },
+          {
+            "__hand__:H04": 1
+          },
+          {
+            "__hand__:H05": 1
+          },
+          {
+            "__hand__:H06": 1
+          },
+          {
+            "__hand__:H07": 1
+          },
+          {
+            "__hand__:H09": 1
+          },
+          {
+            "__hand__:H10": 1
+          },
+          {
+            "__hand__:H11": 1
           }
         ]
       ]
@@ -494,7 +730,51 @@
         "mode": "draws",
         "value": 2
       }
+    },
+    "H12": {
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      }
+    },
+    "H13": {
+      "imperm": {
+        "mode": "impact",
+        "value": 4
+      },
+      "purge": {
+        "mode": "impact",
+        "value": 4
+      },
+      "nibiru": {
+        "mode": "impact",
+        "value": 4
+      },
+      "ash": {
+        "mode": "impact",
+        "value": 4
+      },
+      "veiler": {
+        "mode": "impact",
+        "value": 4
+      },
+      "belle": {
+        "mode": "impact",
+        "value": 4
+      },
+      "mourner": {
+        "mode": "impact",
+        "value": 4
+      },
+      "impulse": {
+        "mode": "impact",
+        "value": 4
+      }
     }
   },
-  "id_counter": 12
+  "id_counter": 14
 }

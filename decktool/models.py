@@ -1,7 +1,74 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class DeckVariant:
+    id: str
+    name: str
+    decklist: Dict[str, int]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "decklist": dict(self.decklist),
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "DeckVariant":
+        return DeckVariant(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "Variant")),
+            decklist=dict(data.get("decklist", data.get("cards", {})) or {}),
+        )
+
+
+@dataclass
+class DrawEffect:
+    draw: int
+    cost_mode: str  # "none" | "discard" | "banish"
+    cost_count: int
+    cost_cards: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "draw": int(self.draw),
+            "cost_mode": str(self.cost_mode),
+            "cost_count": int(self.cost_count),
+            "cost_cards": list(self.cost_cards),
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "DrawEffect":
+        return DrawEffect(
+            draw=int(data.get("draw", 0)),
+            cost_mode=str(data.get("cost_mode", "none") or "none"),
+            cost_count=int(data.get("cost_count", 1) or 1),
+            cost_cards=[str(c) for c in (data.get("cost_cards", []) or [])],
+        )
+
+
+@dataclass
+class CardMeta:
+    tags: List[str]
+    draw_effect: Optional[DrawEffect] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = {"tags": list(self.tags)}
+        if self.draw_effect:
+            out["draw_effect"] = self.draw_effect.to_dict()
+        return out
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "CardMeta":
+        tags = [str(t) for t in (data.get("tags", []) or [])]
+        draw_effect = None
+        if data.get("draw_effect"):
+            draw_effect = DrawEffect.from_dict(data["draw_effect"])
+        return CardMeta(tags=tags, draw_effect=draw_effect)
 
 
 @dataclass

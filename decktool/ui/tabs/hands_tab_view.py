@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
+from ...utils import attach_treeview_sorting
+
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
 
@@ -200,6 +202,8 @@ class HandsTabView:
         self.must_tree.heading("qty", text="Qty")
         self.must_tree.column("card", width=240, anchor="w")
         self.must_tree.column("qty", width=70, anchor="center")
+        self.must_tree.tag_configure("handref", foreground="#2563EB")
+        attach_treeview_sorting(self.must_tree, {"card": "str", "qty": "num"})
 
         # Let it fill available area (still no scrollbar)
         self.must_tree.grid(row=0, column=0, sticky="nsew")
@@ -222,7 +226,7 @@ class HandsTabView:
         self.btn_must_add = ttk.Button(row, text="Add", style="SmallPrimary.TButton")
         self.btn_must_add.pack(side="left")
 
-        self.btn_must_remove = ttk.Button(row, text="Remove", style="Small.TButton")
+        self.btn_must_remove = ttk.Button(row, text="Remove", style="SmallDanger.TButton")
         self.btn_must_remove.pack(side="left", padx=(8, 0))
 
         # =========================
@@ -264,7 +268,7 @@ class HandsTabView:
         group_actions = ttk.Frame(or_box, style="Card.TFrame")
         group_actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
 
-        self.btn_group_add = ttk.Button(group_actions, text="Add group", style="Small.TButton")
+        self.btn_group_add = ttk.Button(group_actions, text="Add group", style="SmallPrimary.TButton")
         self.btn_group_add.pack(side="left")
 
         self.btn_group_remove = ttk.Button(group_actions, text="Remove group", style="SmallDanger.TButton")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import re
 from tkinter import messagebox
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Dict, List
 
 from ..context_menu import (
     bind_listbox_right_click_delete,
@@ -11,10 +11,12 @@ from ..context_menu import (
 )
 from ...models import IdealHand
 from ...utils import (
-    apply_cardcount_prefix,
+    apply_cardcount_prefix_range,
     hand_display_name,
-    ideal_hand_min_card_count,
-    safe_sorted_cards,
+    ideal_hand_card_count_range_with_refs,
+    is_hand_ref,
+    hand_ref_id,
+    make_hand_ref,
 )
 
 if TYPE_CHECKING:
@@ -23,11 +25,14 @@ if TYPE_CHECKING:
 
 
 class HandsTabController:
-    _NAME_PREFIX_RE = re.compile(r"^\s*\d+\s*C\s*[-:]\s*", re.IGNORECASE)
+    _NAME_PREFIX_RE = re.compile(r"^\s*\d+\s*(?:-\s*\d+\s*)?C\s*[-:]\s*", re.IGNORECASE)
 
     def __init__(self, app: "DeckToolMainWindow", view: "HandsTabView") -> None:
         self.app = app
         self.v = view
+        self._combo_display_to_key: Dict[str, str] = {}
+        self._combo_key_to_display: Dict[str, str] = {}
+        self._last_missing_refs: set[str] = set()
 
     # -------------------------
     # Helpers
@@ -77,9 +82,87 @@ class HandsTabController:
     # Refresh
     # -------------------------
     def refresh_card_sources(self) -> None:
-        cards = safe_sorted_cards(list(self.app.decklist.keys()))
-        self.v.must_card_combo["values"] = cards
-        self.v.or_card_combo["values"] = cards
+        cards = self.app.get_all_deck_cards()
+        entries: List[str] = list(cards)
+        display_to_key: Dict[str, str] = {c: c for c in cards}
+
+        current_id = self.app.hand_id_var.get().strip()
+        hands = []
+        for h in sorted(self.app.ideal_hands.values(), key=lambda x: x.id):
+            if h.id == current_id:
+                continue
+            label = f"[Hand] {hand_display_name(h)}"
+            hands.append(label)
+            display_to_key[label] = make_hand_ref(h.id)
+
+        entries.extend(hands)
+
+        self.v.must_card_combo["values"] = entries
+        self.v.or_card_combo["values"] = entries
+        self._combo_display_to_key = display_to_key
+        self._combo_key_to_display = {v: k for k, v in display_to_key.items()}
+
+    def _display_for_key(self, key: str) -> str:
+        if is_hand_ref(key):
+            hid = hand_ref_id(key)
+            hand = self.app.ideal_hands.get(hid)
+            if hand:
+                return f"↪ {hand_display_name(hand)}"
+            return f"↪ {hid}"
+        return key
+
+    def _key_from_display(self, display: str) -> str:
+        return self._combo_display_to_key.get(display, display)
+
+    def _combo_display_from_key(self, key: str) -> str:
+        return self._combo_key_to_display.get(key, self._display_for_key(key))
+
+    def _normalize_key(self, key: str) -> str:
+        if is_hand_ref(key):
+            return key
+        if key in self._combo_display_to_key:
+            return self._combo_display_to_key[key]
+
+        raw = key.strip()
+        if raw.startswith("[Hand]"):
+            raw = raw.replace("[Hand]", "", 1).strip()
+        if raw.startswith("↪"):
+            raw = raw.replace("↪", "", 1).strip()
+
+        if " - " in raw:
+            cand = raw.split(" - ", 1)[0].strip()
+        else:
+            cand = raw
+        if cand in self.app.ideal_hands:
+            return make_hand_ref(cand)
+        return key
+
+    def _normalize_hand_refs(self, hand: IdealHand) -> None:
+        changed = False
+        for key in list(hand.must.keys()):
+            new_key = self._normalize_key(str(key))
+            if new_key != key:
+                hand.must[new_key] = hand.must.pop(key)
+                changed = True
+
+        for gidx, group in enumerate(hand.or_groups):
+            for oidx, opt in enumerate(group):
+                if not opt:
+                    continue
+                new_opt = dict(opt)
+                for key in list(opt.keys()):
+                    new_key = self._normalize_key(str(key))
+                    if new_key != key:
+                        new_opt[new_key] = new_opt.pop(key)
+                        changed = True
+                hand.or_groups[gidx][oidx] = new_opt
+
+        if changed:
+            self.app._set_status("Normalized hand references.")
+
+    def _normalize_all_hand_refs(self) -> None:
+        for hand in self.app.ideal_hands.values():
+            self._normalize_hand_refs(hand)
 
     def refresh(self) -> None:
         cur_id = self.app.hand_id_var.get().strip()
@@ -99,10 +182,14 @@ class HandsTabController:
                     break
 
         self.refresh_card_sources()
+        self._normalize_all_hand_refs()
         self.refresh_hand_editor()
+        self._warn_missing_hand_refs()
 
     def refresh_hand_editor(self) -> None:
         hand = self.app.get_current_hand()
+        if hand:
+            self._normalize_hand_refs(hand)
         self._refresh_must_tree(hand)
         self._refresh_group_list(hand)
         self.refresh_or_options()
@@ -116,6 +203,31 @@ class HandsTabController:
             self.v.or_hint_var.set("Add a group, select it, then add options.")
         else:
             self.v.or_hint_var.set("Select an ideal hand first.")
+
+    def _warn_missing_hand_refs(self) -> None:
+        missing = set()
+        for h in self.app.ideal_hands.values():
+            for card in h.must.keys():
+                if is_hand_ref(card):
+                    ref_id = hand_ref_id(card)
+                    if ref_id not in self.app.ideal_hands:
+                        missing.add(ref_id)
+            for group in h.or_groups:
+                for opt in group:
+                    for card in (opt or {}).keys():
+                        if is_hand_ref(card):
+                            ref_id = hand_ref_id(card)
+                            if ref_id not in self.app.ideal_hands:
+                                missing.add(ref_id)
+        if missing:
+            if missing != self._last_missing_refs:
+                self._last_missing_refs = set(missing)
+                messagebox.showwarning(
+                    "Missing hand reference",
+                    "Some ideal hands reference deleted hands:\n" + ", ".join(sorted(missing)),
+                )
+        else:
+            self._last_missing_refs = set()
 
     # -------------------------
     # Selection / CRUD
@@ -175,8 +287,8 @@ class HandsTabController:
         )
 
         # store with prefix immediately
-        needed = ideal_hand_min_card_count(new_hand)
-        new_hand.name = apply_cardcount_prefix(new_hand.name, needed)
+        min_needed, max_needed = ideal_hand_card_count_range_with_refs(new_hand, self.app.ideal_hands)
+        new_hand.name = apply_cardcount_prefix_range(new_hand.name, min_needed, max_needed)
 
         self.app.ideal_hands[new_id] = new_hand
         self.app.handtrap_effects[new_id] = copy.deepcopy(self.app.handtrap_effects.get(hand.id, {}) or {})
@@ -223,10 +335,10 @@ class HandsTabController:
             return
 
         hand.base_score = int(self.app.hand_score_var.get())
-        needed = ideal_hand_min_card_count(hand)
+        min_needed, max_needed = ideal_hand_card_count_range_with_refs(hand, self.app.ideal_hands)
 
         # store WITH prefix, but keep editor WITHOUT prefix
-        hand.name = apply_cardcount_prefix(name_editor, needed)
+        hand.name = apply_cardcount_prefix_range(name_editor, min_needed, max_needed)
         self.app.hand_name_var.set(self._strip_cardcount_prefix(hand.name))
 
         self.refresh()
@@ -242,14 +354,17 @@ class HandsTabController:
         if not hand:
             return
         for card, qty in sorted(hand.must.items(), key=lambda x: x[0].lower()):
-            self.v.must_tree.insert("", "end", values=(card, qty))
+            disp = self._display_for_key(card)
+            tags = ("handref",) if is_hand_ref(card) else ()
+            self.v.must_tree.insert("", "end", iid=card, values=(disp, qty), tags=tags)
 
     def _on_select_must(self, _evt=None) -> None:
         sel = self.v.must_tree.selection()
         if not sel:
             return
+        key = sel[0]
         card, qty = self.v.must_tree.item(sel[0])["values"]
-        self.v.must_card_var.set(card)
+        self.v.must_card_var.set(self._combo_display_from_key(key))
         self.v.must_qty_var.set(int(qty))
 
     def add_must(self) -> None:
@@ -258,7 +373,8 @@ class HandsTabController:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
             return
 
-        card = self.v.must_card_var.get().strip()
+        display = self.v.must_card_var.get().strip()
+        card = self._key_from_display(display)
         if not card:
             messagebox.showwarning("Missing data", "Please select a card.")
             return
@@ -278,8 +394,8 @@ class HandsTabController:
         sel = self.v.must_tree.selection()
         if not sel:
             return
-        card = self.v.must_tree.item(sel[0])["values"][0]
-        hand.must.pop(card, None)
+        key = sel[0]
+        hand.must.pop(key, None)
         self.refresh_hand_editor()
 
     # -------------------------
@@ -314,7 +430,14 @@ class HandsTabController:
             return
 
         for opt in hand.or_groups[gidx]:
-            txt = " & ".join([f"{c}({q})" for c, q in opt.items()]) if opt else "(empty)"
+            if not opt:
+                self.v.options_list.insert("end", "(empty)")
+                continue
+            parts = []
+            for c, q in opt.items():
+                disp = self._display_for_key(c)
+                parts.append(f"{disp}({q})")
+            txt = " & ".join(parts)
             self.v.options_list.insert("end", txt)
 
     def _ensure_group(self, hand: IdealHand) -> int:
@@ -360,7 +483,8 @@ class HandsTabController:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
             return
 
-        card = self.v.or_card_var.get().strip()
+        display = self.v.or_card_var.get().strip()
+        card = self._key_from_display(display)
         if not card:
             messagebox.showwarning("Missing data", "Please select a card for the option.")
             return

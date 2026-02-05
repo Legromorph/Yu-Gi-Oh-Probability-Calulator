@@ -1,28 +1,57 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
-from .models import IdealHand
+from .models import IdealHand, DeckVariant, CardMeta
 
 
 def project_to_dict(
-    decklist: Dict[str, int],
+    deck_variants: List[DeckVariant],
+    active_deck_id: str,
+    card_meta: Dict[str, CardMeta],
     ideal_hands: Dict[str, IdealHand],
     handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
     id_counter: int,
 ) -> Dict[str, Any]:
     return {
-        "version": 1,
-        "decklist": decklist,
+        "version": 3,
+        "decklists": [dv.to_dict() for dv in deck_variants],
+        "active_deck_id": active_deck_id,
+        "card_meta": {k: v.to_dict() for k, v in (card_meta or {}).items()},
         "ideal_hands": [h.to_dict() for h in ideal_hands.values()],
         "handtrap_effects": handtrap_effects,
         "id_counter": id_counter,
     }
 
 
-def project_from_dict(data: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, IdealHand], Dict[str, Any], int]:
-    decklist = dict(data.get("decklist", {}))
+def project_from_dict(
+    data: Dict[str, Any],
+) -> Tuple[List[DeckVariant], str, Dict[str, CardMeta], Dict[str, IdealHand], Dict[str, Any], int]:
+    deck_variants: List[DeckVariant] = []
+    active_deck_id = ""
+
+    if "decklists" in data:
+        for dv in data.get("decklists", []) or []:
+            deck_variants.append(DeckVariant.from_dict(dv))
+        active_deck_id = str(data.get("active_deck_id", "") or "")
+    else:
+        # legacy format: single decklist
+        deck_variants.append(
+            DeckVariant(id="D01", name="Variant 1", decklist=dict(data.get("decklist", {}) or {}))
+        )
+        active_deck_id = "D01"
+
+    if not deck_variants:
+        deck_variants.append(DeckVariant(id="D01", name="Variant 1", decklist={}))
+        active_deck_id = "D01"
+
+    card_meta: Dict[str, CardMeta] = {}
+    for cname, meta in (data.get("card_meta", {}) or {}).items():
+        try:
+            card_meta[str(cname)] = CardMeta.from_dict(meta or {})
+        except Exception:
+            continue
 
     ideal_hands: Dict[str, IdealHand] = {}
     for hd in data.get("ideal_hands", []):
@@ -31,7 +60,7 @@ def project_from_dict(data: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, I
 
     handtrap_effects = data.get("handtrap_effects", {}) or {}
     id_counter = int(data.get("id_counter", 1))
-    return decklist, ideal_hands, handtrap_effects, id_counter
+    return deck_variants, active_deck_id, card_meta, ideal_hands, handtrap_effects, id_counter
 
 
 def load_project(path: str) -> Dict[str, Any]:
