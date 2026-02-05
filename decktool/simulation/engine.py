@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import random
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -284,6 +287,7 @@ def _try_draw_effects(
     hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int]],
     hand_min_counts: Dict[str, int],
     draw_effects: Dict[str, Dict[str, Any]],
+    rnd: random.Random,
 ) -> Tuple[Optional[str], Optional[int]]:
     best_id = None
     best_score = None
@@ -296,7 +300,7 @@ def _try_draw_effects(
         if draw_n <= 0 or draw_n > len(remaining_deck):
             continue
 
-        extra = random.sample(remaining_deck, draw_n)
+        extra = rnd.sample(remaining_deck, draw_n)
         new_counts = Counter(hand)
         new_counts.update(extra)
 
@@ -375,6 +379,67 @@ def _min_required_count(
     return base + extra
 
 
+def _simulate_opening_stats_chunk(
+    deck: List[str],
+    hand_size: int,
+    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int]],
+    hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int]],
+    hand_min_counts: Dict[str, int],
+    draw_effects: Dict[str, Dict[str, Any]],
+    handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
+    trap_names: List[str],
+    num_hands: int,
+    seed: int,
+) -> Tuple[int, Dict[str, int], Dict[str, Dict[int, int]], Dict[str, int]]:
+    rnd = random.Random(seed)
+
+    hits_any = 0
+    hits_by_hand: Counter[str] = Counter()
+    trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
+    trap_sum_all: Counter[str] = Counter()
+
+    for _ in range(num_hands):
+        hand = rnd.sample(deck, hand_size)
+        hc = Counter(hand)
+
+        best_id, _best_score = _best_hand_match(hc, hands_pre, hands_by_id, hand_min_counts)
+
+        if best_id is None and draw_effects:
+            remaining = list(deck)
+            for c in hand:
+                try:
+                    remaining.remove(c)
+                except ValueError:
+                    continue
+            best_id, _best_score = _try_draw_effects(
+                hand, hc, remaining, hands_pre, hands_by_id, hand_min_counts, draw_effects, rnd
+            )
+
+        if best_id is None:
+            continue
+
+        hits_any += 1
+        hits_by_hand[best_id] += 1
+
+        effects = handtrap_effects.get(best_id, {}) or {}
+
+        for t in trap_names:
+            eff = effects.get(t)
+            val = 0
+            if eff:
+                try:
+                    val = int(eff.get("value") or 0)
+                except Exception:
+                    val = 0
+
+            val = max(0, min(4, val))
+            trap_hist[t][val] += 1
+            trap_sum_all[t] += val
+
+    trap_hist_out = {t: dict(hist) for t, hist in trap_hist.items()}
+    return hits_any, dict(hits_by_hand), trap_hist_out, dict(trap_sum_all)
+
+
 def simulate_opening_stats(
     decklist: Dict[str, int],
     ideal_hands: List[Dict[str, Any]],
@@ -387,6 +452,8 @@ def simulate_opening_stats(
     progress_cb: Optional[Callable[[int, int], None]] = None,  # (done, total)
     trap_names: Optional[List[str]] = None,  # if None -> inferred from handtrap_effects
     card_meta: Optional[Dict[str, Any]] = None,
+    num_workers: Optional[int] = None,
+    executor: Optional[ProcessPoolExecutor] = None,
 ) -> Dict[str, Any]:
     """
     Computes (best-line per opening hand):
@@ -424,9 +491,13 @@ def simulate_opening_stats(
         hand_min_counts[hid] = _min_required_count(must, or_groups, hands_by_id, {hid})
     draw_effects = _extract_draw_effects(card_meta)
 
+    if num_workers is None:
+        num_workers = max(1, os.cpu_count() or 1)
+    else:
+        num_workers = max(1, int(num_workers))
+
     hits_any = 0
     hits_by_hand = Counter()
-
     trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
     trap_sum_all = Counter()
 
@@ -434,54 +505,113 @@ def simulate_opening_stats(
     done = 0
     chunk_size = max(1, int(chunk_size))
 
-    while done < total:
-        this_chunk = min(chunk_size, total - done)
+    if progress_cb:
+        progress_cb(0, total)
 
-        for _ in range(this_chunk):
-            hand = random.sample(deck, hand_size)
-            hc = Counter(hand)
+    use_parallel = (executor is not None) or (num_workers > 1 and total > chunk_size)
 
-            best_id, best_score = _best_hand_match(hc, hands_pre, hands_by_id, hand_min_counts)
+    if use_parallel:
+        chunks: List[int] = []
+        remaining = total
+        while remaining > 0:
+            this_chunk = min(chunk_size, remaining)
+            chunks.append(this_chunk)
+            remaining -= this_chunk
 
-            if best_id is None and draw_effects:
-                remaining = list(deck)
-                for c in hand:
-                    try:
-                        remaining.remove(c)
-                    except ValueError:
-                        continue
-                best_id, best_score = _try_draw_effects(
-                    hand, hc, remaining, hands_pre, hands_by_id, hand_min_counts, draw_effects
+        num_workers = min(num_workers, len(chunks))
+        max_workers = getattr(executor, "_max_workers", None) if executor is not None else None
+        if max_workers:
+            num_workers = min(num_workers, int(max_workers))
+
+        owns_executor = False
+        ex = executor
+        if ex is None:
+            try:
+                ctx = mp.get_context("spawn")
+            except Exception:
+                ctx = mp.get_context()
+            ex = ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx)
+            owns_executor = True
+
+        try:
+            futures = {}
+            for idx, this_chunk in enumerate(chunks):
+                seed = random.randrange(1 << 30)
+                fut = ex.submit(
+                    _simulate_opening_stats_chunk,
+                    deck,
+                    hand_size,
+                    hands_pre,
+                    hands_by_id,
+                    hand_min_counts,
+                    draw_effects,
+                    handtrap_effects,
+                    trap_names,
+                    this_chunk,
+                    seed + idx,
                 )
+                futures[fut] = this_chunk
 
-            if best_id is None:
-                continue
+            for fut in as_completed(futures):
+                this_chunk = futures[fut]
+                h_any, h_by_hand, h_trap_hist, h_trap_sum = fut.result()
+                hits_any += int(h_any)
+                hits_by_hand.update(h_by_hand)
+                for t, hist in h_trap_hist.items():
+                    trap_hist[t].update(hist)
+                trap_sum_all.update(h_trap_sum)
+                done += this_chunk
+                if progress_cb:
+                    progress_cb(done, total)
+        finally:
+            if owns_executor and ex is not None:
+                ex.shutdown(wait=True)
+    else:
+        while done < total:
+            this_chunk = min(chunk_size, total - done)
 
-            hits_any += 1
-            hits_by_hand[best_id] += 1
+            for _ in range(this_chunk):
+                hand = random.sample(deck, hand_size)
+                hc = Counter(hand)
 
-            effects = handtrap_effects.get(best_id, {}) or {}
+                best_id, _best_score = _best_hand_match(hc, hands_pre, hands_by_id, hand_min_counts)
 
-            for t in trap_names:
-                eff = effects.get(t)
-                val = 0
-                if eff:
-                    try:
-                        val = int(eff.get("value") or 0)
-                    except Exception:
-                        val = 0
+                if best_id is None and draw_effects:
+                    remaining = list(deck)
+                    for c in hand:
+                        try:
+                            remaining.remove(c)
+                        except ValueError:
+                            continue
+                    best_id, _best_score = _try_draw_effects(
+                        hand, hc, remaining, hands_pre, hands_by_id, hand_min_counts, draw_effects, random
+                    )
 
-                if t in DRAW_TRAPS:
+                if best_id is None:
+                    continue
+
+                hits_any += 1
+                hits_by_hand[best_id] += 1
+
+                effects = handtrap_effects.get(best_id, {}) or {}
+
+                for t in trap_names:
+                    eff = effects.get(t)
+                    val = 0
+                    if eff:
+                        try:
+                            val = int(eff.get("value") or 0)
+                        except Exception:
+                            val = 0
+
                     val = max(0, min(4, val))
-                else:
-                    val = max(0, min(4, val))
 
-                trap_hist[t][val] += 1
-                trap_sum_all[t] += val
+                    trap_hist[t][val] += 1
+                    trap_sum_all[t] += val
 
-        done += this_chunk
-        if progress_cb:
-            progress_cb(done, total)
+            done += this_chunk
+            if progress_cb:
+                progress_cb(done, total)
 
     per_hand = []
     for hid, name, _must, _or_groups, _score in hands_pre:

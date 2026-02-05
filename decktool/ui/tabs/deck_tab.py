@@ -86,8 +86,11 @@ class DeckTab:
             messagebox.showwarning("Invalid value", "Quantity cannot be negative.")
             return
 
-        decklist = self.app.get_active_decklist()
+        variant = self.app.get_active_deck()
+        decklist = variant.decklist
         decklist[name] = qty
+        if name in variant.bench:
+            variant.bench.pop(name, None)
         self.app._set_status(f"Updated deck: {name} = {qty}")
         self._refresh_variant(self.app.active_deck_id)
         self.app.hands_tab.refresh_card_sources()
@@ -182,7 +185,16 @@ class DeckTab:
         win = tk.Toplevel(self.app)
         win.title(f"Card settings - {card}")
         win.transient(self.app)
-        win.after(0, win.grab_set)
+        win.update_idletasks()
+
+        def safe_grab(attempts: int = 5) -> None:
+            try:
+                win.grab_set()
+            except tk.TclError:
+                if attempts > 0:
+                    win.after(50, lambda: safe_grab(attempts - 1))
+
+        win.after(0, safe_grab)
 
         root = ttk.Frame(win, padding=14)
         root.pack(fill="both", expand=True)
@@ -561,8 +573,12 @@ class DeckTab:
         active = self.app.deck_variants.get(deck_id)
         if not active:
             return {}
-        active_cards = set(active.decklist.keys())
+        active_cards = {c for c, q in active.decklist.items() if int(q) > 0}
         bench: Dict[str, int] = {}
+        for card, qty in (active.bench or {}).items():
+            if int(qty) <= 0:
+                continue
+            bench[card] = max(bench.get(card, 0), int(qty))
         for vid, dv in self.app.deck_variants.items():
             if vid == deck_id:
                 continue
@@ -572,6 +588,15 @@ class DeckTab:
                 if int(qty) <= 0:
                     continue
                 bench[card] = max(bench.get(card, 0), int(qty))
+            for card, qty in (dv.bench or {}).items():
+                if card in active_cards:
+                    continue
+                if int(qty) <= 0:
+                    continue
+                bench[card] = max(bench.get(card, 0), int(qty))
+        for card in list(bench.keys()):
+            if card in active_cards:
+                bench.pop(card, None)
         return dict(sorted(bench.items(), key=lambda x: x[0].lower()))
 
     def _move_to_bench(self, deck_id: str) -> None:
@@ -582,10 +607,14 @@ class DeckTab:
         sel = tree.selection()
         if not sel:
             return
-        decklist = self.app.deck_variants[deck_id].decklist
+        variant = self.app.deck_variants[deck_id]
+        decklist = variant.decklist
         for item in sel:
             card = tree.item(item)["values"][0]
+            qty = int(decklist.get(card, 0))
             decklist.pop(card, None)
+            if qty > 0:
+                variant.bench[card] = max(int(variant.bench.get(card, 0)), qty)
         self._refresh_variant(deck_id)
         self.app.hands_tab.refresh_card_sources()
         self.app.sim_tab.refresh_deckcount_default()
@@ -600,10 +629,13 @@ class DeckTab:
         sel = bench_tree.selection()
         if not sel:
             return
-        decklist = self.app.deck_variants[deck_id].decklist
+        variant = self.app.deck_variants[deck_id]
+        decklist = variant.decklist
         for item in sel:
             card, qty = bench_tree.item(item)["values"]
             decklist[card] = int(qty)
+            if card in variant.bench:
+                variant.bench.pop(card, None)
         self._refresh_variant(deck_id)
         self.app.hands_tab.refresh_card_sources()
         self.app.sim_tab.refresh_deckcount_default()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
 
@@ -9,12 +9,14 @@ class DeckVariant:
     id: str
     name: str
     decklist: Dict[str, int]
+    bench: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "decklist": dict(self.decklist),
+            "bench": dict(self.bench),
         }
 
     @staticmethod
@@ -23,6 +25,7 @@ class DeckVariant:
             id=str(data.get("id", "")),
             name=str(data.get("name", "Variant")),
             decklist=dict(data.get("decklist", data.get("cards", {})) or {}),
+            bench=dict(data.get("bench", {}) or {}),
         )
 
 

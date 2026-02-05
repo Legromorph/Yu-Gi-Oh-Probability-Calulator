@@ -56,16 +56,16 @@ class SimTab:
         prog = ttk.Frame(outer, padding=(12, 6))
         prog.pack(fill="x", pady=(8, 0))
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(prog, textvariable=self.status_var, style="Muted.TLabel").pack(side="left")
+        ttk.Label(prog, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w")
         self.progress = ttk.Progressbar(
             prog,
             orient="horizontal",
             mode="determinate",
             maximum=100,
-            length=180,
+            length=240,
             style="Slim.Horizontal.TProgressbar",
         )
-        self.progress.pack(side="right")
+        self.progress.pack(anchor="w", pady=(6, 0))
 
         results = ttk.LabelFrame(outer, text="Results", padding=14, style="Card.TLabelframe")
         results.pack(fill="both", expand=True, pady=(12, 0))

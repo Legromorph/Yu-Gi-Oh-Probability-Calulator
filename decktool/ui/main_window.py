@@ -128,7 +128,7 @@ class DeckToolMainWindow(tk.Tk):
         deck_id = f"D{self._deck_id_counter:02d}"
         self._deck_id_counter += 1
 
-        variant = DeckVariant(id=deck_id, name=name, decklist=dict(cards or {}))
+        variant = DeckVariant(id=deck_id, name=name, decklist=dict(cards or {}), bench={})
         self.deck_variants[deck_id] = variant
         self.deck_variant_order.append(deck_id)
         self.active_deck_id = deck_id
@@ -156,6 +156,8 @@ class DeckToolMainWindow(tk.Tk):
         cards = set()
         for dv in self.deck_variants.values():
             cards.update(dv.decklist.keys())
+            if getattr(dv, "bench", None):
+                cards.update(dv.bench.keys())
         return safe_sorted_cards(list(cards))
 
     # -------------------------

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import threading
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -19,12 +22,13 @@ class OptimizeTab:
         self.variant_var = tk.StringVar()
         self.min_deck_var = tk.IntVar(value=40)
         self.max_deck_var = tk.IntVar(value=60)
-        self.eval_num_var = tk.IntVar(value=20_000)
-        self.max_steps_var = tk.IntVar(value=20)
+        self.eval_num_var = tk.IntVar(value=150_000)
+        self.max_steps_var = tk.IntVar(value=120)
         self.goingfirst_var = tk.BooleanVar(value=True)
 
         self.status_var = tk.StringVar(value="Ready.")
         self.sim_status_var = tk.StringVar(value="")
+        self.eval_detail_var = tk.StringVar(value="")
 
         self.card_rows: Dict[str, Dict[str, Any]] = {}
         self.cards_frame: ttk.Frame | None = None
@@ -79,29 +83,27 @@ class OptimizeTab:
         status.pack(fill="x", pady=(8, 0))
         status.columnconfigure(0, weight=1)
         ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(status, textvariable=self.sim_status_var, style="Muted.TLabel").grid(row=1, column=0, sticky="w")
-
-        ttk.Label(status, text="Steps", style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(10, 6))
         self.step_progress = ttk.Progressbar(
             status,
             orient="horizontal",
             mode="determinate",
             maximum=100,
-            length=160,
+            length=240,
             style="Slim.Horizontal.TProgressbar",
         )
-        self.step_progress.grid(row=0, column=2, sticky="e")
+        self.step_progress.grid(row=1, column=0, sticky="w", pady=(4, 6))
 
-        ttk.Label(status, text="Sim", style="Muted.TLabel").grid(row=1, column=1, sticky="e", padx=(10, 6))
+        ttk.Label(status, textvariable=self.sim_status_var, style="Muted.TLabel").grid(row=2, column=0, sticky="w")
         self.sim_progress = ttk.Progressbar(
             status,
             orient="horizontal",
             mode="determinate",
             maximum=100,
-            length=160,
+            length=240,
             style="Slim.Horizontal.TProgressbar",
         )
-        self.sim_progress.grid(row=1, column=2, sticky="e")
+        self.sim_progress.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(status, textvariable=self.eval_detail_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(4, 0))
 
         content = ttk.Panedwindow(outer, orient="horizontal")
         content.pack(fill="both", expand=True, pady=(10, 0))
@@ -297,17 +299,12 @@ class OptimizeTab:
         deckcount: int,
         num_hands: int,
         goingfirst: bool,
+        executor: Optional[ProcessPoolExecutor] = None,
     ) -> float:
         all_cards = self.app.get_all_deck_cards()
         decklist = {c: decklist.get(c, 0) for c in all_cards}
         total = deck_size_positive(decklist)
         deckcount = max(int(deckcount), total)
-
-        self.app.after(0, lambda: self._update_sim_progress(0, 0, num_hands))
-
-        def progress(done: int, total_hands: int) -> None:
-            pct = int(done * 100 / total_hands) if total_hands > 0 else 0
-            self.app.after(0, lambda: self._update_sim_progress(pct, done, total_hands))
 
         report = simulate_opening_stats(
             decklist=decklist,
@@ -319,9 +316,8 @@ class OptimizeTab:
             goingfirst=goingfirst,
             fill_blanks=True,
             chunk_size=self._auto_chunk(num_hands),
-            progress_cb=progress,
+            executor=executor,
         )
-        self.app.after(0, lambda: self._update_sim_progress(100, num_hands, num_hands))
         return float(report["opening_probability_any_ideal_hand"])
 
     def _reduce_to_max(
@@ -419,8 +415,10 @@ class OptimizeTab:
         self.step_progress["value"] = 0
         self.sim_progress["value"] = 0
         self.sim_status_var.set("")
+        self.eval_detail_var.set("")
 
         def worker() -> None:
+            executor: Optional[ProcessPoolExecutor] = None
             try:
                 base_counts = {c: int(variant.decklist.get(c, 0)) for c in constraints.keys()}
                 for card, (min_v, max_v) in constraints.items():
@@ -433,13 +431,48 @@ class OptimizeTab:
                 if base_deckcount > deck_max:
                     base_deckcount = deck_max
 
+                max_workers = max(1, os.cpu_count() or 1)
+                if max_workers > 1:
+                    try:
+                        ctx = mp.get_context("spawn")
+                    except Exception:
+                        ctx = mp.get_context()
+                    executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)
+
                 cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], float] = {}
+
+                def _format_move(move: Optional[Tuple[str, int]]) -> str:
+                    if not move:
+                        return "—"
+                    card, delta = move
+                    if card == "__deckcount__":
+                        return f"Deckcount {delta:+d}"
+                    return f"{card} {delta:+d}"
+
+                def update_step_ui(step_idx: int, eval_done: int, eval_total: int, detail: str = "") -> None:
+                    frac = 0.0
+                    if eval_total > 0:
+                        frac = min(1.0, max(0.0, eval_done / eval_total))
+                    pct = int(((step_idx + frac) / max_steps) * 100)
+                    msg = f"Optimizing… step {step_idx + 1}/{max_steps}"
+                    if eval_total > 0:
+                        msg += f" (eval {eval_done}/{eval_total})"
+                    self.app.after(0, lambda p=pct: self.step_progress.config(value=p))
+                    self.app.after(0, lambda s=msg: self.status_var.set(s))
+
+                    eval_pct = int((eval_done * 100 / eval_total)) if eval_total > 0 else 0
+                    eval_msg = ""
+                    if eval_total > 0:
+                        eval_msg = f"Evaluating… {eval_done}/{eval_total}"
+                    self.app.after(0, lambda p=eval_pct: self.sim_progress.config(value=p))
+                    self.app.after(0, lambda s=eval_msg: self.sim_status_var.set(s))
+                    self.app.after(0, lambda s=detail: self.eval_detail_var.set(s))
 
                 def score(counts: Dict[str, int], deckcount: int) -> float:
                     key = (tuple(sorted(counts.items())), int(deckcount))
                     if key in cache:
                         return cache[key]
-                    p = self._eval_prob(counts, deckcount, num, goingfirst)
+                    p = self._eval_prob(counts, deckcount, num, goingfirst, executor=executor)
                     cache[key] = p
                     return p
 
@@ -476,6 +509,8 @@ class OptimizeTab:
                     cand = dict(counts)
                     cand[card] = new_qty
                     total = sum(counts.values()) + delta
+                    if delta < 0 and total < deck_min:
+                        return None
                     if total > deck_max:
                         return None
                     new_deckcount = int(deckcount)
@@ -487,6 +522,9 @@ class OptimizeTab:
 
                 for step in range(max_steps):
                     improved = False
+                    eval_done = 0
+                    eval_total = 0
+                    update_step_ui(step, eval_done, eval_total, "Evaluating candidates…")
 
                     # Momentum: try same move again if it worked before
                     if last_move is not None:
@@ -504,6 +542,12 @@ class OptimizeTab:
                                     best_counts = dict(current_counts)
                                     best_deckcount = int(current_deckcount)
                                     best_prob = current_prob
+                                update_step_ui(
+                                    step,
+                                    eval_done,
+                                    eval_total,
+                                    f"Momentum kept: {_format_move(last_move)}",
+                                )
                             else:
                                 last_move = None
                         else:
@@ -518,9 +562,11 @@ class OptimizeTab:
                         cand: Optional[Tuple[Dict[str, int], int]],
                         move: Optional[Tuple[str, int]],
                     ) -> None:
-                        nonlocal best_cand, best_cand_deckcount, best_cand_prob, best_move
+                        nonlocal best_cand, best_cand_deckcount, best_cand_prob, best_move, eval_done
                         if cand is None:
                             return
+                        eval_done += 1
+                        update_step_ui(step, eval_done, eval_total)
                         cand_counts, cand_deckcount = cand
                         p = score(cand_counts, cand_deckcount)
                         if best_cand_prob is None or p > best_cand_prob:
@@ -547,23 +593,28 @@ class OptimizeTab:
                         if current_deckcount > min_deckcount:
                             single_moves.append(("__deckcount__", -1))
 
+                        inc_cards = [c for c, (_min_v, max_v) in constraints.items() if current_counts.get(c, 0) < max_v]
+                        dec_cards = [c for c, (min_v, _max_v) in constraints.items() if current_counts.get(c, 0) > min_v]
+                        inc_cards = sorted(
+                            inc_cards, key=lambda c: (constraints[c][1] - current_counts.get(c, 0)), reverse=True
+                        )[:6]
+                        dec_cards = sorted(
+                            dec_cards, key=lambda c: (current_counts.get(c, 0) - constraints[c][0]), reverse=True
+                        )[:6]
+                        swap_pairs = [(inc, dec) for inc in inc_cards for dec in dec_cards if inc != dec]
+
+                        eval_total = len(single_moves) + len(swap_pairs)
+                        update_step_ui(step, eval_done, eval_total)
+
                         for card, delta in single_moves:
                             consider_candidate(apply_move(current_counts, current_deckcount, card, delta), (card, delta))
 
-                        inc_cards = [c for c, (_min_v, max_v) in constraints.items() if current_counts.get(c, 0) < max_v]
-                        dec_cards = [c for c, (min_v, _max_v) in constraints.items() if current_counts.get(c, 0) > min_v]
-                        inc_cards = sorted(inc_cards, key=lambda c: (constraints[c][1] - current_counts.get(c, 0)), reverse=True)[:6]
-                        dec_cards = sorted(dec_cards, key=lambda c: (current_counts.get(c, 0) - constraints[c][0]), reverse=True)[:6]
-
-                        for inc in inc_cards:
-                            for dec in dec_cards:
-                                if inc == dec:
-                                    continue
-                                cand = dict(current_counts)
-                                cand[inc] = cand.get(inc, 0) + 1
-                                cand[dec] = cand.get(dec, 0) - 1
-                                if sum(cand.values()) <= current_deckcount:
-                                    consider_candidate((cand, current_deckcount), None)
+                        for inc, dec in swap_pairs:
+                            cand = dict(current_counts)
+                            cand[inc] = cand.get(inc, 0) + 1
+                            cand[dec] = cand.get(dec, 0) - 1
+                            if sum(cand.values()) <= current_deckcount:
+                                consider_candidate((cand, current_deckcount), None)
 
                     if not improved:
                         if best_cand is None or best_cand_prob is None or best_cand_deckcount is None:
@@ -579,6 +630,10 @@ class OptimizeTab:
                                 best_counts = dict(current_counts)
                                 best_deckcount = int(current_deckcount)
                                 best_prob = current_prob
+                            detail = f"Improved with {_format_move(best_move)}"
+                            if best_move is None:
+                                detail = "Improved (swap move)"
+                            update_step_ui(step, eval_done, eval_total, detail)
                         else:
                             # Allow limited exploratory steps (sideways or slight dip)
                             if explore_steps_left > 0:
@@ -587,16 +642,19 @@ class OptimizeTab:
                                 current_prob = best_cand_prob
                                 last_move = best_move
                                 explore_steps_left -= 1
+                                detail = f"Exploring: {_format_move(best_move)}"
+                                if best_move is None:
+                                    detail = "Exploring (swap move)"
+                                update_step_ui(step, eval_done, eval_total, detail)
                             else:
                                 current_counts = dict(best_counts)
                                 current_deckcount = int(best_deckcount)
                                 current_prob = best_prob
                                 last_move = None
                                 explore_steps_left = explore_budget
+                                update_step_ui(step, eval_done, eval_total, "No improvement — reset to best")
 
-                    pct = int((step + 1) * 100 / max_steps)
-                    self.app.after(0, lambda p=pct: self.step_progress.config(value=p))
-                    self.app.after(0, lambda s=step + 1: self.status_var.set(f"Optimizing… step {s}/{max_steps}"))
+                    update_step_ui(step + 1, 0, 0, "")
 
                 self.app.after(
                     0,
@@ -615,15 +673,18 @@ class OptimizeTab:
                 self.app.after(0, lambda: self.status_var.set("Error."))
                 self.app.after(0, lambda: self.step_progress.config(value=0))
                 self.app.after(0, lambda: self.sim_progress.config(value=0))
+            finally:
+                if executor is not None:
+                    executor.shutdown(wait=True)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _update_sim_progress(self, pct: int, done: int, total: int) -> None:
         self.sim_progress["value"] = pct
         if total:
-            self.sim_status_var.set(f"Simulating… {done:,}/{total:,} ({pct}%)")
+            self.sim_status_var.set(f"Evaluating… {done:,}/{total:,} ({pct}%)")
         else:
-            self.sim_status_var.set("Simulating…")
+            self.sim_status_var.set("Evaluating…")
 
     def _show_result(
         self,
@@ -637,7 +698,7 @@ class OptimizeTab:
     ) -> None:
         self.step_progress["value"] = 100
         self.sim_progress["value"] = 100
-        self.sim_status_var.set("Simulation done.")
+        self.sim_status_var.set("Evaluation done.")
         self.status_var.set("Done.")
 
         self._last_result = dict(result)

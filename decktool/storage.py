@@ -15,7 +15,7 @@ def project_to_dict(
     id_counter: int,
 ) -> Dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "decklists": [dv.to_dict() for dv in deck_variants],
         "active_deck_id": active_deck_id,
         "card_meta": {k: v.to_dict() for k, v in (card_meta or {}).items()},

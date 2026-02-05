@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "decklists": [
     {
       "id": "D01",
@@ -24,10 +24,13 @@
         "vortex": 1,
         "manifestation": 1,
         "tenki": 1
+      },
+      "bench": {
+        "ash blossom": 3
       }
     },
     {
-      "id": "D04",
+      "id": "D05",
       "name": "Variant 2",
       "decklist": {
         "shiina": 2,
@@ -41,7 +44,6 @@
         "the fallen": 3,
         "crown": 3,
         "shield bearer": 2,
-        "dropplet": 3,
         "calledby": 1,
         "mandate": 1,
         "meghala": 2,
@@ -49,11 +51,14 @@
         "vortex": 1,
         "manifestation": 1,
         "tenki": 1,
-        "ash blossom": 3
+        "pot of extra": 3
+      },
+      "bench": {
+        "dropplet": 3
       }
     }
   ],
-  "active_deck_id": "D01",
+  "active_deck_id": "D05",
   "card_meta": {
     "shiina": {
       "tags": [
@@ -177,6 +182,17 @@
       "tags": [
         "non-engine"
       ]
+    },
+    "pot of extra": {
+      "tags": [
+        "non-engine"
+      ],
+      "draw_effect": {
+        "draw": 2,
+        "cost_mode": "none",
+        "cost_count": 0,
+        "cost_cards": []
+      }
     }
   },
   "ideal_hands": [
