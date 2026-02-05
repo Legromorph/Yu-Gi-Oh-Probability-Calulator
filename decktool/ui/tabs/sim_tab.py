@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import threading
 import math
 import tkinter as tk
@@ -11,9 +12,12 @@ from ...utils import attach_treeview_sorting, deck_size_positive, ideal_hand_car
 
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
+# endregion
 
 
+# region Simulation tab
 class SimTab:
+    """Run simulations and compare variants."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
         self.results_notebook: ttk.Notebook | None = None
@@ -28,6 +32,7 @@ class SimTab:
         self._summary_context_iid: Optional[str] = None
 
     def build(self, parent: ttk.Frame) -> None:
+        """Build the simulation tab UI."""
         outer = ttk.Frame(parent, padding=12)
         outer.pack(fill="both", expand=True)
 
@@ -238,6 +243,7 @@ class SimTab:
         return min(num_hands, min(50_000, target))
 
     def run(self) -> None:
+        """Run simulations for all variants in a worker thread."""
         if not self.app.ideal_hands:
             messagebox.showwarning("Missing data", "No ideal hands defined.")
             return
@@ -517,3 +523,4 @@ class SimTab:
                         "end",
                         values=(trap, "draws", f"{t['mean']:.3f}", details),
                     )
+# endregion

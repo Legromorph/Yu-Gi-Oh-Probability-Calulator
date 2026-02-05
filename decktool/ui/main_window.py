@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import os
 import re
 import tkinter as tk
@@ -15,6 +16,7 @@ from .tabs.hands_tab import HandsTab
 from .tabs.traps_tab import TrapsTab
 from .tabs.sim_tab import SimTab
 from .tabs.optimize_tab import OptimizeTab
+# endregion
 
 
 class DeckToolMainWindow(tk.Tk):
@@ -48,6 +50,7 @@ class DeckToolMainWindow(tk.Tk):
         self.hand_name_var = tk.StringVar(value="")
         self.hand_score_var = tk.IntVar(value=0)
 
+        # UI layout
         self._build_menu()
         self._build_shell()
 
@@ -64,6 +67,7 @@ class DeckToolMainWindow(tk.Tk):
         self.optimize_tab.build(self.tab_optimize)
         self.sim_tab.build(self.tab_sim)
 
+        # Initial render
         self.refresh_all()
         self._set_status("Ready.")
 
@@ -72,6 +76,7 @@ class DeckToolMainWindow(tk.Tk):
     # -------------------------
 
     def _build_shell(self) -> None:
+        """Build the static shell (header, status, notebook)."""
         header = ttk.Frame(self, padding=(18, 16))
         header.pack(fill="x")
 
@@ -103,6 +108,7 @@ class DeckToolMainWindow(tk.Tk):
         self.notebook.add(self.tab_sim, text="Simulation")
 
     def _set_status(self, text: str) -> None:
+        """Update the footer status line."""
         self.status_var.set(text)
 
     # -------------------------
@@ -110,11 +116,13 @@ class DeckToolMainWindow(tk.Tk):
     # -------------------------
 
     def _ensure_default_deck(self) -> None:
+        """Guarantee at least one variant exists."""
         if self.deck_variant_order:
             return
         self.add_deck_variant(name="Variant 1")
 
     def _sync_deck_id_counter(self) -> None:
+        """Sync internal ID counter based on existing variant IDs."""
         max_id = 0
         for vid in self.deck_variant_order:
             m = re.search(r"\d+", vid)
@@ -123,6 +131,7 @@ class DeckToolMainWindow(tk.Tk):
         self._deck_id_counter = max_id + 1 if max_id > 0 else 1
 
     def add_deck_variant(self, name: Optional[str] = None, cards: Optional[Dict[str, int]] = None) -> DeckVariant:
+        """Create and register a new deck variant."""
         if name is None:
             name = f"Variant {len(self.deck_variant_order) + 1}"
         deck_id = f"D{self._deck_id_counter:02d}"
@@ -135,10 +144,12 @@ class DeckToolMainWindow(tk.Tk):
         return variant
 
     def set_active_deck(self, deck_id: str) -> None:
+        """Mark a variant as the active deck."""
         if deck_id in self.deck_variants:
             self.active_deck_id = deck_id
 
     def get_active_deck(self) -> DeckVariant:
+        """Return the active deck variant (fallback to first)."""
         if self.active_deck_id in self.deck_variants:
             return self.deck_variants[self.active_deck_id]
         if self.deck_variant_order:
@@ -147,12 +158,15 @@ class DeckToolMainWindow(tk.Tk):
         return self.deck_variants[self.active_deck_id]
 
     def get_active_decklist(self) -> Dict[str, int]:
+        """Convenience: active variant's decklist dict."""
         return self.get_active_deck().decklist
 
     def get_deck_variants_in_order(self) -> List[DeckVariant]:
+        """Return variants in their user-defined order."""
         return [self.deck_variants[vid] for vid in self.deck_variant_order]
 
     def get_all_deck_cards(self) -> List[str]:
+        """Union of all cards across variants and benches."""
         cards = set()
         for dv in self.deck_variants.values():
             cards.update(dv.decklist.keys())
@@ -175,6 +189,7 @@ class DeckToolMainWindow(tk.Tk):
         return self.ideal_hands.get(hid)
 
     def require_current_hand(self) -> IdealHand:
+        """Raise if no hand is selected, otherwise return it."""
         hand = self.get_current_hand()
         if not hand:
             raise RuntimeError("Please select an ideal hand first.")
@@ -185,6 +200,7 @@ class DeckToolMainWindow(tk.Tk):
     # -------------------------
 
     def refresh_all(self) -> None:
+        """Refresh every tab."""
         self.deck_tab.refresh()
         self.hands_tab.refresh()
         self.traps_tab.refresh()
@@ -199,11 +215,9 @@ class DeckToolMainWindow(tk.Tk):
         self.traps_tab.refresh()
         self.sim_tab.refresh()
 
-    # -------------------------
-    # Menu
-    # -------------------------
-
+    # region Menu
     def _build_menu(self) -> None:
+        """Create the application menu and global shortcuts."""
         menubar = tk.Menu(self)
 
         filemenu = tk.Menu(menubar, tearoff=False)
@@ -220,12 +234,11 @@ class DeckToolMainWindow(tk.Tk):
         self.bind_all("<Control-n>", lambda _e: self.new_project())
         self.bind_all("<Control-o>", lambda _e: self.open_project())
         self.bind_all("<Control-s>", lambda _e: self.save_project())
+    # endregion
 
-    # -------------------------
-    # Project I/O
-    # -------------------------
-
+    # region Project I/O
     def new_project(self) -> None:
+        """Reset all state and start a fresh project."""
         if not messagebox.askyesno("Confirm", "Start a new project? Unsaved changes will be lost."):
             return
 
@@ -250,6 +263,7 @@ class DeckToolMainWindow(tk.Tk):
         self._set_status("New project created.")
 
     def open_project(self) -> None:
+        """Open a project JSON and restore its state."""
         path = filedialog.askopenfilename(
             title="Open Project",
             filetypes=[("Deck Tool JSON", "*.json"), ("All files", "*.*")],
@@ -288,6 +302,7 @@ class DeckToolMainWindow(tk.Tk):
             messagebox.showerror("Open failed", f"Could not open file:\n{e}")
 
     def save_project(self) -> None:
+        """Save the project to the current file."""
         if self.current_file is None:
             return self.save_project_as()
 
@@ -307,6 +322,7 @@ class DeckToolMainWindow(tk.Tk):
             messagebox.showerror("Save failed", f"Could not save:\n{e}")
 
     def save_project_as(self) -> None:
+        """Prompt for a save path and write the project."""
         path = filedialog.asksaveasfilename(
             title="Save Project As",
             defaultextension=".json",
@@ -317,3 +333,4 @@ class DeckToolMainWindow(tk.Tk):
         self.current_file = path
         self.save_project()
         self.title(f"Deck Tool - {os.path.basename(path)}")
+    # endregion

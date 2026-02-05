@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+# region Imports
 import re
 from typing import Any, Dict, List
 from .models import IdealHand
+# endregion
 
+# region Hand reference constants
 HAND_REF_PREFIX = "__hand__:"
+# endregion
 
 
+# region Deck utilities
 def deck_size_positive(decklist: Dict[str, int]) -> int:
+    """Sum only positive card counts in a decklist."""
     return sum(int(v) for v in decklist.values() if int(v) > 0)
+# endregion
 
 
+# region Ideal hand card counts
 def ideal_hand_min_card_count(hand: IdealHand) -> int:
     """
     Minimum cards needed for name prefix:
@@ -33,6 +41,7 @@ def ideal_hand_min_card_count_with_refs(
     all_hands: Dict[str, IdealHand],
     visited: List[str] | None = None,
 ) -> int:
+    """Minimum card count for a hand, following hand references."""
     if visited is None:
         visited = []
     if hand.id in visited:
@@ -97,10 +106,12 @@ def apply_cardcount_prefix_range(name: str, min_count: int, max_count: int) -> s
 
 
 def hand_display_name(hand: IdealHand) -> str:
+    """Human-readable hand label."""
     return f"{hand.id} - {hand.name}"
 
 
 def safe_sorted_cards(cards: List[str]) -> List[str]:
+    """Case-insensitive card sorting."""
     return sorted(cards, key=lambda s: s.lower())
 
 
@@ -109,6 +120,7 @@ def ideal_hand_card_count_range_with_refs(
     all_hands: Dict[str, IdealHand],
     visited: List[str] | None = None,
 ) -> tuple[int, int]:
+    """Min/max card count for a hand, including referenced hands and OR ranges."""
     if visited is None:
         visited = []
     if hand.id in visited:
@@ -165,23 +177,31 @@ def ideal_hand_card_count_range_with_refs(
 
     visited.pop()
     return min_base + min_extra, max_base + max_extra
+# endregion
 
 
+# region Hand reference helpers
 def make_hand_ref(hand_id: str) -> str:
+    """Create a stored hand reference token."""
     return f"{HAND_REF_PREFIX}{hand_id}"
 
 
 def is_hand_ref(name: str) -> bool:
+    """Check if a string is a hand reference token."""
     return name.startswith(HAND_REF_PREFIX)
 
 
 def hand_ref_id(name: str) -> str:
+    """Extract the referenced hand id from a token."""
     if not is_hand_ref(name):
         return ""
     return name[len(HAND_REF_PREFIX):]
+# endregion
 
 
+# region Treeview sorting
 def _parse_sort_number(value: Any) -> float | None:
+    """Parse numbers from strings like '12.3%' or return None."""
     s = str(value).strip()
     if not s or s in {"—", "-"}:
         return None
@@ -193,6 +213,7 @@ def _parse_sort_number(value: Any) -> float | None:
 
 
 def attach_treeview_sorting(tree: Any, col_types: Dict[str, str] | None = None) -> None:
+    """Enable click-to-sort on Treeview headers."""
     if col_types is None:
         col_types = {}
 
@@ -223,3 +244,4 @@ def attach_treeview_sorting(tree: Any, col_types: Dict[str, str] | None = None) 
 
     for col in tree["columns"]:
         tree.heading(col, command=lambda c=col: sort(c, False))
+# endregion

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+# region Imports
 import json
 from typing import Any, Dict, List, Tuple
 
 from .models import IdealHand, DeckVariant, CardMeta
+# endregion
 
 
+# region Project serialization
 def project_to_dict(
     deck_variants: List[DeckVariant],
     active_deck_id: str,
@@ -14,6 +17,7 @@ def project_to_dict(
     handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
     id_counter: int,
 ) -> Dict[str, Any]:
+    """Serialize the entire project state to a dict."""
     return {
         "version": 4,
         "decklists": [dv.to_dict() for dv in deck_variants],
@@ -28,6 +32,7 @@ def project_to_dict(
 def project_from_dict(
     data: Dict[str, Any],
 ) -> Tuple[List[DeckVariant], str, Dict[str, CardMeta], Dict[str, IdealHand], Dict[str, Any], int]:
+    """Deserialize a project dict into runtime objects."""
     deck_variants: List[DeckVariant] = []
     active_deck_id = ""
 
@@ -61,13 +66,18 @@ def project_from_dict(
     handtrap_effects = data.get("handtrap_effects", {}) or {}
     id_counter = int(data.get("id_counter", 1))
     return deck_variants, active_deck_id, card_meta, ideal_hands, handtrap_effects, id_counter
+# endregion
 
 
+# region File I/O
 def load_project(path: str) -> Dict[str, Any]:
+    """Load a project file from disk."""
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_project(path: str, data: Dict[str, Any]) -> None:
+    """Save a project file to disk."""
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+# endregion

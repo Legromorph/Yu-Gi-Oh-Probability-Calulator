@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+# region Imports
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
+# endregion
 
 
+# region Context menu helpers
 def bind_treeview_right_click_delete(
     tree: ttk.Treeview,
     delete_cb: Callable[[], None],
     label: str = "Delete",
 ) -> None:
+    """Attach a right-click delete menu to a Treeview."""
     menu = tk.Menu(tree, tearoff=False)
     menu.add_command(label=label, command=delete_cb)
 
@@ -29,6 +33,7 @@ def bind_listbox_right_click_delete(
     delete_cb: Callable[[], None],
     label: str = "Delete",
 ) -> None:
+    """Attach a right-click delete menu to a Listbox."""
     menu = tk.Menu(lb, tearoff=False)
     menu.add_command(label=label, command=delete_cb)
 
@@ -42,3 +47,4 @@ def bind_listbox_right_click_delete(
 
     lb.bind("<Button-3>", popup)
     lb.bind("<Button-2>", popup)
+# endregion

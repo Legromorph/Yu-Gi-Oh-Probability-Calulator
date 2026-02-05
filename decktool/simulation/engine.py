@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import os
 import random
 import multiprocessing as mp
@@ -8,11 +9,15 @@ from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..utils import is_hand_ref, hand_ref_id
+# endregion
 
+# region Constants
 # These are treated as "draw counts" instead of impact
 DRAW_TRAPS = {"fuwa", "purulia"}
+# endregion
 
 
+# region Deck normalization and validation
 def _normalize_deck(
     decklist: Dict[str, int],
     deckcount: Optional[int] = None,
@@ -67,6 +72,7 @@ def _dict_cards(cards: Optional[Dict[str, int]]) -> Dict[str, int]:
     return out
 
 
+# region Hand matching helpers
 def _matches_required(
     hand_counts: Counter,
     required: Dict[str, int],
@@ -184,6 +190,7 @@ def _validate_ideal_hands_exist_in_deck(decklist: Dict[str, int], ideal_hands: L
 
     if unknown:
         raise ValueError(f"Ideal hands contain unknown cards: {sorted(unknown)}")
+# endregion
 
 
 def _infer_trap_names(handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]]) -> List[str]:
@@ -220,8 +227,10 @@ def _best_hand_match(
                 best_id = hid
                 best_min = min_count
     return best_id, best_score
+# endregion
 
 
+# region Draw effects
 def _extract_draw_effects(card_meta: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     if not card_meta:
@@ -377,8 +386,10 @@ def _min_required_count(
             extra += min(option_sizes)
 
     return base + extra
+# endregion
 
 
+# region Simulation core
 def _simulate_opening_stats_chunk(
     deck: List[str],
     hand_size: int,
@@ -398,12 +409,14 @@ def _simulate_opening_stats_chunk(
     trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
     trap_sum_all: Counter[str] = Counter()
 
+    # Simulate a fixed number of opening hands inside a worker process.
     for _ in range(num_hands):
         hand = rnd.sample(deck, hand_size)
         hc = Counter(hand)
 
         best_id, _best_score = _best_hand_match(hc, hands_pre, hands_by_id, hand_min_counts)
 
+        # Retry with draw effects if no base hand matched.
         if best_id is None and draw_effects:
             remaining = list(deck)
             for c in hand:
@@ -421,6 +434,7 @@ def _simulate_opening_stats_chunk(
         hits_any += 1
         hits_by_hand[best_id] += 1
 
+        # Aggregate handtrap stats for the matched ideal hand.
         effects = handtrap_effects.get(best_id, {}) or {}
 
         for t in trap_names:
@@ -467,6 +481,7 @@ def simulate_opening_stats(
     if num_hands <= 0:
         raise ValueError("num_hands must be > 0")
 
+    # 1) Normalize and validate inputs.
     _validate_ideal_hands_exist_in_deck(decklist, ideal_hands)
     deck = _normalize_deck(decklist, deckcount=deckcount, fill_blanks=fill_blanks)
 
@@ -477,6 +492,7 @@ def simulate_opening_stats(
     if trap_names is None:
         trap_names = _infer_trap_names(handtrap_effects)
 
+    # 2) Preprocess ideal hands into fast lookup structures.
     hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int]] = []
     for h in ideal_hands:
         hid = str(h.get("id", "")).strip() or f"hand_{len(hands_pre) + 1}"
@@ -491,6 +507,7 @@ def simulate_opening_stats(
         hand_min_counts[hid] = _min_required_count(must, or_groups, hands_by_id, {hid})
     draw_effects = _extract_draw_effects(card_meta)
 
+    # 3) Prepare counters for aggregation.
     if num_workers is None:
         num_workers = max(1, os.cpu_count() or 1)
     else:
@@ -511,6 +528,7 @@ def simulate_opening_stats(
     use_parallel = (executor is not None) or (num_workers > 1 and total > chunk_size)
 
     if use_parallel:
+        # Split total simulations into chunks for worker processes.
         chunks: List[int] = []
         remaining = total
         while remaining > 0:
@@ -526,6 +544,7 @@ def simulate_opening_stats(
         owns_executor = False
         ex = executor
         if ex is None:
+            # Use spawn to avoid GUI/fork issues on some platforms.
             try:
                 ctx = mp.get_context("spawn")
             except Exception:
@@ -567,6 +586,7 @@ def simulate_opening_stats(
             if owns_executor and ex is not None:
                 ex.shutdown(wait=True)
     else:
+        # Single-process fallback (or when workload is too small).
         while done < total:
             this_chunk = min(chunk_size, total - done)
 
@@ -613,6 +633,7 @@ def simulate_opening_stats(
             if progress_cb:
                 progress_cb(done, total)
 
+    # 4) Build report structures.
     per_hand = []
     for hid, name, _must, _or_groups, _score in hands_pre:
         cnt = hits_by_hand[hid]
@@ -671,3 +692,4 @@ def simulate_opening_stats(
         "trap_stats": trap_stats,
         "trap_samples": int(good_openings),
     }
+# endregion

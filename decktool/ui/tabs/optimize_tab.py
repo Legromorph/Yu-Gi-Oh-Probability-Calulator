@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import os
 import threading
 import multiprocessing as mp
@@ -13,9 +14,12 @@ from ...utils import attach_treeview_sorting, deck_size_positive, safe_sorted_ca
 
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
+# endregion
 
 
+# region Optimization tab
 class OptimizeTab:
+    """Search for improved decklists under constraints."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
 
@@ -47,6 +51,7 @@ class OptimizeTab:
         self._last_base_deckcount: Optional[int] = None
 
     def build(self, parent: ttk.Frame) -> None:
+        """Build the optimization tab UI."""
         outer = ttk.Frame(parent, padding=12)
         outer.pack(fill="both", expand=True)
 
@@ -301,6 +306,7 @@ class OptimizeTab:
         goingfirst: bool,
         executor: Optional[ProcessPoolExecutor] = None,
     ) -> float:
+        """Evaluate opening probability for a given decklist/deckcount."""
         all_cards = self.app.get_all_deck_cards()
         decklist = {c: decklist.get(c, 0) for c in all_cards}
         total = deck_size_positive(decklist)
@@ -367,6 +373,7 @@ class OptimizeTab:
         return counts
 
     def run(self) -> None:
+        """Run the optimizer in a background thread."""
         if not self.app.ideal_hands:
             messagebox.showwarning("Missing data", "No ideal hands defined.")
             return
@@ -753,3 +760,4 @@ class OptimizeTab:
             return
         self.app.add_deck_variant(name=new_name, cards=self._last_result)
         self.app.refresh_all()
+# endregion

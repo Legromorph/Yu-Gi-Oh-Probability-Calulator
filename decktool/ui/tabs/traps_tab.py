@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -9,13 +10,17 @@ from ...utils import hand_display_name
 
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
+# endregion
 
 
+# region Handtraps tab
 class TrapsTab:
+    """Configure handtrap effects per ideal hand."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
 
     def build(self, parent: ttk.Frame) -> None:
+        """Build the handtraps tab UI."""
         outer = ttk.Frame(parent, padding=12)
         outer.pack(fill="both", expand=True)
 
@@ -85,6 +90,7 @@ class TrapsTab:
         ttk.Button(bottom, text="Reset this hand", style="Danger.TButton", command=self.reset).pack(side="left", padx=(10, 0))
 
     def refresh(self) -> None:
+        """Refresh the combobox and current selection."""
         self.combo["values"] = [hand_display_name(h) for h in self.app.ideal_hands.values()]
 
         # If editor has current hand -> sync combobox
@@ -96,6 +102,7 @@ class TrapsTab:
             self.info.config(text="No hand selected.")
 
     def _on_selected(self, _evt=None) -> None:
+        """Handle combobox selection changes."""
         label = self.pick_var.get().strip()
         if not label:
             return
@@ -113,6 +120,7 @@ class TrapsTab:
         self.app.refresh_hand_dependent_views()
 
     def _load(self, hid: str) -> None:
+        """Load stored handtrap effects into the UI."""
         hand = self.app.ideal_hands.get(hid)
         if not hand:
             return
@@ -130,6 +138,7 @@ class TrapsTab:
                 self.widgets[trap]["widget"].set(f"{val} - {IMPACT_LABELS[val].split('-', 1)[1].strip()}")
 
     def save(self) -> None:
+        """Persist current handtrap values to the model."""
         hand = self.app.get_current_hand()
         if not hand:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
@@ -153,6 +162,7 @@ class TrapsTab:
         messagebox.showinfo("Saved", f"Handtrap settings saved for {hand.id}.")
 
     def reset(self) -> None:
+        """Reset handtrap values for the selected hand."""
         hand = self.app.get_current_hand()
         if not hand:
             return
@@ -160,3 +170,4 @@ class TrapsTab:
             return
         self.app.handtrap_effects[hand.id] = {}
         self._load(hand.id)
+# endregion

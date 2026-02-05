@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from typing import TYPE_CHECKING, Dict, Any, Optional
@@ -10,9 +11,12 @@ from ...utils import attach_treeview_sorting
 
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
+# endregion
 
 
+# region Deck tab
 class DeckTab:
+    """Deck list editor with variant tabs and swap bench."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
         self.variant_tabs: Dict[str, Dict[str, Any]] = {}
@@ -21,6 +25,7 @@ class DeckTab:
         self.deck_clipboard: Dict[str, int] = {}
 
     def build(self, parent: ttk.Frame) -> None:
+        """Build the deck tab UI."""
         pane = ttk.Panedwindow(parent, orient="horizontal")
         pane.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -64,6 +69,7 @@ class DeckTab:
         self._build_existing_variant_tabs()
 
     def refresh(self) -> None:
+        """Refresh all variant tables and dependent tabs."""
         self._sync_tabs()
         for deck_id in list(self.variant_tabs.keys()):
             self._refresh_variant(deck_id)
@@ -73,6 +79,7 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
 
     def add_update(self) -> None:
+        """Add or update a card in the active decklist."""
         name = self.deck_card_var.get().strip()
         try:
             qty = int(self.deck_qty_var.get())
@@ -97,6 +104,7 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
 
     def remove_selected(self) -> None:
+        """Remove the selected card(s) from the active decklist."""
         tree = self._active_tree()
         if tree is None:
             return
@@ -112,6 +120,7 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
 
     def clear(self) -> None:
+        """Clear the entire active decklist."""
         if not messagebox.askyesno("Confirm", "Clear the entire deck?"):
             return
         self.app.get_active_decklist().clear()
@@ -121,6 +130,7 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
 
     def delete_variant(self, deck_id: Optional[str] = None) -> None:
+        """Delete a deck variant (guarded to keep at least one)."""
         if len(self.app.deck_variant_order) <= 1:
             messagebox.showwarning("Not allowed", "You must keep at least one deck variant.")
             return
@@ -172,6 +182,7 @@ class DeckTab:
         return name or None
 
     def open_card_settings(self) -> None:
+        """Open the per-card settings dialog for the selected card."""
         card = self._get_active_card_name()
         if not card:
             messagebox.showwarning("Missing data", "Please select a card or enter a card name.")
@@ -375,6 +386,7 @@ class DeckTab:
         return None
 
     def _create_variant_tab(self, deck_id: str, name: str) -> None:
+        """Create a UI tab for a deck variant."""
         if self.notebook is None:
             return
         frame = ttk.Frame(self.notebook)
@@ -570,6 +582,7 @@ class DeckTab:
                 break
 
     def _bench_cards_for_variant(self, deck_id: str) -> Dict[str, int]:
+        """Build the swap-bench view for a given variant."""
         active = self.app.deck_variants.get(deck_id)
         if not active:
             return {}
@@ -600,6 +613,7 @@ class DeckTab:
         return dict(sorted(bench.items(), key=lambda x: x[0].lower()))
 
     def _move_to_bench(self, deck_id: str) -> None:
+        """Move selected cards from the deck into the variant bench."""
         data = self.variant_tabs.get(deck_id)
         if not data:
             return
@@ -620,6 +634,7 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
 
     def _move_to_variant(self, deck_id: str) -> None:
+        """Move selected bench cards into the active deck."""
         data = self.variant_tabs.get(deck_id)
         if not data:
             return
@@ -745,3 +760,4 @@ class DeckTab:
         self.app.sim_tab.refresh_deckcount_default()
         self.app._set_status(f"Pasted {len(self.deck_clipboard)} cards.")
         return "break"
+# endregion

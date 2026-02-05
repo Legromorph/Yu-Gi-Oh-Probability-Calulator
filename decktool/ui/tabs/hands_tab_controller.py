@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import copy
 import re
 from tkinter import messagebox
@@ -22,9 +23,12 @@ from ...utils import (
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
     from .hands_tab_view import HandsTabView
+# endregion
 
 
+# region Controller
 class HandsTabController:
+    """Controller for Ideal Hands (UI events + model updates)."""
     _NAME_PREFIX_RE = re.compile(r"^\s*\d+\s*(?:-\s*\d+\s*)?C\s*[-:]\s*", re.IGNORECASE)
 
     def __init__(self, app: "DeckToolMainWindow", view: "HandsTabView") -> None:
@@ -34,9 +38,7 @@ class HandsTabController:
         self._combo_key_to_display: Dict[str, str] = {}
         self._last_missing_refs: set[str] = set()
 
-    # -------------------------
-    # Helpers
-    # -------------------------
+    # region Helpers
     def _strip_cardcount_prefix(self, name: str) -> str:
         return self._NAME_PREFIX_RE.sub("", (name or "").strip()).strip()
 
@@ -47,10 +49,9 @@ class HandsTabController:
             self.v.editor_frame.configure(text=f"Editor ({hand.id})")
         else:
             self.v.editor_frame.configure(text="Editor")
+    # endregion
 
-    # -------------------------
-    # Bindings
-    # -------------------------
+    # region Bindings
     def bind_events(self) -> None:
         # List select
         self.v.hands_list.bind("<<ListboxSelect>>", self._on_select_hand)
@@ -77,10 +78,9 @@ class HandsTabController:
         bind_listbox_right_click_delete(self.v.group_list, self.remove_group_selected, label="Delete group")
         bind_listbox_right_click_delete(self.v.options_list, self.remove_option_selected, label="Delete option")
         bind_listbox_right_click_delete(self.v.hands_list, self.delete_hand, label="Delete ideal hand")
+    # endregion
 
-    # -------------------------
-    # Refresh
-    # -------------------------
+    # region Refresh
     def refresh_card_sources(self) -> None:
         cards = self.app.get_all_deck_cards()
         entries: List[str] = list(cards)
@@ -228,10 +228,9 @@ class HandsTabController:
                 )
         else:
             self._last_missing_refs = set()
+    # endregion
 
-    # -------------------------
-    # Selection / CRUD
-    # -------------------------
+    # region Selection / CRUD
     def _on_select_hand(self, _evt=None) -> None:
         cur = self.v.hands_list.curselection()
         if not cur:
@@ -252,6 +251,7 @@ class HandsTabController:
         self.app._set_status(f"Selected {hand.id}")
 
     def new_hand(self) -> None:
+        """Create a new blank ideal hand and select it."""
         hid = f"H{self.app._id_counter:02d}"
         self.app._id_counter += 1
 
@@ -269,6 +269,7 @@ class HandsTabController:
         self.app._set_status(f"Created {hid}")
 
     def duplicate_hand(self) -> None:
+        """Duplicate the selected ideal hand (including handtraps)."""
         hand = self.app.get_current_hand()
         if not hand:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
@@ -303,6 +304,7 @@ class HandsTabController:
         self.app._set_status(f"Duplicated to {new_id}")
 
     def delete_hand(self) -> None:
+        """Delete the selected ideal hand."""
         hand = self.app.get_current_hand()
         if not hand:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
@@ -324,6 +326,7 @@ class HandsTabController:
         self.app._set_status(f"Deleted {hand.id}")
 
     def save_hand(self) -> None:
+        """Persist editor changes into the selected hand."""
         hand = self.app.get_current_hand()
         if not hand:
             messagebox.showwarning("No selection", "Please select an ideal hand first.")
@@ -344,10 +347,9 @@ class HandsTabController:
         self.refresh()
         self.app.traps_tab.refresh()
         self.app._set_status(f"Saved {hand.id}")
+    # endregion
 
-    # -------------------------
-    # Must cards
-    # -------------------------
+    # region Must cards
     def _refresh_must_tree(self, hand: Optional[IdealHand]) -> None:
         for row in self.v.must_tree.get_children():
             self.v.must_tree.delete(row)
@@ -397,10 +399,9 @@ class HandsTabController:
         key = sel[0]
         hand.must.pop(key, None)
         self.refresh_hand_editor()
+    # endregion
 
-    # -------------------------
-    # OR groups
-    # -------------------------
+    # region OR groups
     def _refresh_group_list(self, hand: Optional[IdealHand]) -> None:
         self.v.group_list.delete(0, "end")
         if not hand:
@@ -512,3 +513,4 @@ class HandsTabController:
         if 0 <= oidx < len(hand.or_groups[gidx]):
             hand.or_groups[gidx].pop(oidx)
             self.refresh_or_options()
+# endregion

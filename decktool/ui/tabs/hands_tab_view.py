@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# region Imports
 import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
@@ -8,8 +9,10 @@ from ...utils import attach_treeview_sorting
 
 if TYPE_CHECKING:
     from ..main_window import DeckToolMainWindow
+# endregion
 
 
+# region View class
 class HandsTabView:
     """
     Pure UI/layout.
@@ -52,6 +55,7 @@ class HandsTabView:
         self.editor_frame: ttk.LabelFrame | None = None
 
     def build(self, parent: ttk.Frame) -> None:
+        """Build all widgets for the Hands tab."""
         root = ttk.Frame(parent, padding=12)
         root.pack(fill="both", expand=True)
 
@@ -300,3 +304,4 @@ class HandsTabView:
 
         self.btn_opt_remove = ttk.Button(opt_row, text="Remove", style="SmallDanger.TButton")
         self.btn_opt_remove.pack(side="left", padx=(8, 0))
+# endregion

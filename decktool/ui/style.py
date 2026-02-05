@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+# region Imports
 import tkinter as tk
 from tkinter import ttk
+# endregion
 
 
+# region App styling
 def apply_app_style(root: tk.Tk) -> None:
+    """Configure theme, colors, and widget styles for the app."""
     style = ttk.Style(root)
 
     if "clam" in style.theme_names():
@@ -97,6 +101,7 @@ def apply_app_style(root: tk.Tk) -> None:
 
 
 def _install_button_styles(style: ttk.Style) -> None:
+    """Define button styles once so all tabs stay consistent."""
     base_font = ("TkDefaultFont", 10)
     small_font = ("TkDefaultFont", 9)
 
@@ -159,3 +164,4 @@ def _install_button_styles(style: ttk.Style) -> None:
         lightcolor=style.map("Danger.TButton", "lightcolor"),
         darkcolor=style.map("Danger.TButton", "darkcolor"),
     )
+# endregion
