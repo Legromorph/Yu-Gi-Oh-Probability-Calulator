@@ -2,61 +2,125 @@ from __future__ import annotations
 
 # region Imports
 import os
-import threading
 import multiprocessing as mp
-import time
-from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
-from ....simulation.engine import simulate_opening_stats
-from ....utils import attach_treeview_sorting, deck_size_positive, safe_sorted_cards
+from PySide6 import QtCore, QtGui, QtWidgets
 
-if TYPE_CHECKING:
+from ....optimizer import (
+    OptimizeSettings,
+    OptimizationState,
+    OptimizerRunner,
+    OptimizationProgress,
+    EvolutionRunner,
+    EvolutionState,
+)
+from ....simulation.engine import build_simulation_context
+from ....utils import deck_size_positive, safe_sorted_cards
+
+if False:  # TYPE_CHECKING
     from ...main_window import DeckToolMainWindow
 # endregion
 
 
-# region Optimization tab
-class OptimizeTabView:
+class OptimizationWorker(QtCore.QObject):
+    progress = QtCore.Signal(object)
+    finished = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        runner: OptimizerRunner | EvolutionRunner,
+        should_pause: Callable[[], bool],
+        should_abort: Callable[[], bool],
+    ) -> None:
+        super().__init__()
+        self.runner = runner
+        self.should_pause = should_pause
+        self.should_abort = should_abort
+
+    def run(self) -> None:
+        executor = None
+        try:
+            max_workers = max(1, os.cpu_count() or 1)
+            if max_workers > 1:
+                try:
+                    ctx = mp.get_context("spawn")
+                except Exception:
+                    ctx = mp.get_context()
+                executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)
+                self.runner.executor = executor
+            result = self.runner.run(self.progress.emit, self.should_pause, self.should_abort)
+            self.finished.emit(result)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
+
+
+class OptimizeTab(QtWidgets.QWidget):
     """Search for improved decklists under constraints."""
+
+    TAG_SLIDER_WIDTH = 140
+
     def __init__(self, app: "DeckToolMainWindow") -> None:
+        super().__init__()
         self.app = app
 
-        self.variant_var = tk.StringVar()
-        self.min_deck_var = tk.IntVar(value=40)
-        self.max_deck_var = tk.IntVar(value=60)
-        self.eval_num_var = tk.IntVar(value=150_000)
-        self.max_steps_var = tk.IntVar(value=400)
-        self.eta_var = tk.StringVar(value="—")
-        self.deep_search_var = tk.BooleanVar(value=True)
-        self.goingfirst_var = tk.BooleanVar(value=True)
-        self.dup_penalty_var = tk.BooleanVar(value=False)
-        self.dup_penalty_weight_var = tk.DoubleVar(value=10.0)
+        self.variant_combo: QtWidgets.QComboBox | None = None
+        self.min_spin: QtWidgets.QSpinBox | None = None
+        self.max_spin: QtWidgets.QSpinBox | None = None
+        self.eval_spin: QtWidgets.QSpinBox | None = None
+        self.max_steps_spin: QtWidgets.QSpinBox | None = None
+        self.eval_label: QtWidgets.QLabel | None = None
+        self.max_steps_label: QtWidgets.QLabel | None = None
+        self.mode_combo: QtWidgets.QComboBox | None = None
+        self.deep_check: QtWidgets.QCheckBox | None = None
+        self.goingfirst_check: QtWidgets.QCheckBox | None = None
+        self.dup_check: QtWidgets.QCheckBox | None = None
+        self.dup_slider: QtWidgets.QSlider | None = None
+        self.dup_value: QtWidgets.QLabel | None = None
+        self.prob_threshold_spin: QtWidgets.QSpinBox | None = None
+        self.priority_order_combos: List[QtWidgets.QComboBox] = []
 
-        self.status_var = tk.StringVar(value="Ready.")
-        self.sim_status_var = tk.StringVar(value="")
-        self.eval_detail_var = tk.StringVar(value="")
+        self.evo_box: QtWidgets.QFrame | None = None
+        self.evo_pop_spin: QtWidgets.QSpinBox | None = None
+        self.evo_elite_spin: QtWidgets.QSpinBox | None = None
+        self.evo_mut_spin: QtWidgets.QSpinBox | None = None
+        self.evo_cross_spin: QtWidgets.QSpinBox | None = None
 
+        self.tag_priority_box: QtWidgets.QFrame | None = None
+        self.tag_priority_layout: QtWidgets.QVBoxLayout | None = None
+        self.tag_priority_collapsed: bool = True
+        self.tag_priority_weight_slider: QtWidgets.QSlider | None = None
+        self.tag_priority_weight_value: QtWidgets.QLabel | None = None
+        self.tag_rows: Dict[str, Dict[str, Any]] = {}
+        self._tag_priority_values: Dict[str, int] = {}
+        self._refreshing_tags = False
+
+        self.status_label = QtWidgets.QLabel("Ready.")
+        self.status_label.setProperty("muted", True)
+        self.step_progress = QtWidgets.QProgressBar()
+        self.eval_progress = QtWidgets.QProgressBar()
+        self.eval_status_label = QtWidgets.QLabel("")
+        self.eval_status_label.setProperty("muted", True)
+        self.eval_detail = QtWidgets.QLabel("")
+        self.eval_detail.setProperty("muted", True)
+        self.eval_detail.setWordWrap(True)
+
+        self.btn_optimize = QtWidgets.QPushButton("Optimize")
+        self.btn_optimize.setProperty("primary", True)
+        self.btn_pause = QtWidgets.QPushButton("Pause")
+        self.btn_abort = QtWidgets.QPushButton("Abort")
+        self.btn_abort.setProperty("danger", True)
+        self.btn_resume = QtWidgets.QPushButton("Resume")
+        self.btn_resume.setProperty("primary", True)
+
+        self.cards_inner: QtWidgets.QWidget | None = None
         self.card_rows: Dict[str, Dict[str, Any]] = {}
-        self.tag_priority_vars: Dict[str, tk.DoubleVar] = {}
-        self.tag_priority_frame: ttk.Frame | None = None
-        self.tag_priority_box: ttk.LabelFrame | None = None
-        self.tag_priority_toggle: ttk.Button | None = None
-        self.tag_priority_collapsed: bool = False
-        self.tag_priority_weight_var = tk.DoubleVar(value=0.0)
-        self._tag_slider_len = 160
-        self._tag_label_width = 10
-        self._tag_value_width = 6
-        self.cards_frame: ttk.Frame | None = None
-        self.cards_canvas: tk.Canvas | None = None
-        self.cards_inner: ttk.Frame | None = None
-        self.cards_window_id: int | None = None
 
-        self.result_tree: ttk.Treeview | None = None
-        self.result_summary: ttk.Label | None = None
+        self.result_summary: QtWidgets.QLabel | None = None
+        self.result_table: QtWidgets.QTableWidget | None = None
+
         self._last_result: Optional[Dict[str, int]] = None
         self._last_base: Optional[Dict[str, int]] = None
         self._last_prob: Optional[float] = None
@@ -64,321 +128,368 @@ class OptimizeTabView:
         self._last_locked: Optional[set[str]] = None
         self._last_deckcount: Optional[int] = None
         self._last_base_deckcount: Optional[int] = None
-        self._last_dup_penalty_enabled: bool = False
-        self._last_dup_penalty_weight: float = 0.0
-        self._opt_thread: threading.Thread | None = None
-        self._opt_pause_requested = threading.Event()
-        self._opt_abort_requested = threading.Event()
-        self._opt_resume_state: Optional[Dict[str, Any]] = None
-        self._opt_btn_frame: ttk.Frame | None = None
-        self._opt_btn_main: ttk.Button | None = None
-        self._opt_btn_secondary: ttk.Button | None = None
 
-    def build(self, parent: ttk.Frame) -> None:
-        """Build the optimization tab UI."""
-        outer = ttk.Frame(parent, padding=12)
-        outer.pack(fill="both", expand=True)
+        self._pause_requested = False
+        self._abort_requested = False
+        self._active_state: Optional[OptimizationState | EvolutionState] = None
+        self._active_mode: str = "local"
+        self._loaded_variant_id: Optional[str] = None
+        self._loaded_cards: set[str] = set()
 
-        settings = ttk.LabelFrame(outer, text="Optimize settings", padding=14, style="Card.TLabelframe")
-        settings.pack(fill="x")
+        self._build_ui()
 
-        settings_body = ttk.Frame(settings, style="Card.TFrame")
-        settings_body.pack(fill="x")
+    def _build_ui(self) -> None:
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
 
-        left = ttk.Frame(settings_body, style="Card.TFrame")
-        left.pack(side="left", fill="x", expand=True)
+        settings = QtWidgets.QFrame()
+        settings.setProperty("card", True)
+        settings_layout = QtWidgets.QHBoxLayout(settings)
+        settings_layout.setContentsMargins(14, 12, 14, 12)
+        settings_layout.setSpacing(16)
 
-        right = ttk.Frame(settings_body, style="Card.TFrame")
-        right.pack(side="right", fill="y", padx=(16, 0))
+        left = QtWidgets.QVBoxLayout()
+        right = QtWidgets.QVBoxLayout()
 
-        row1 = ttk.Frame(left, style="Card.TFrame")
-        row1.pack(fill="x")
-        ttk.Label(row1, text="Variant", style="Muted.TLabel").pack(side="left")
-        self.variant_combo = ttk.Combobox(row1, textvariable=self.variant_var, width=32, state="readonly")
-        self.variant_combo.pack(side="left", padx=(8, 12))
-        self.variant_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_variant())
-        ttk.Button(row1, text="Load", style="Small.TButton", command=self._load_variant).pack(side="left")
+        row1 = QtWidgets.QHBoxLayout()
+        row1.addWidget(QtWidgets.QLabel("Variant"))
+        self.variant_combo = QtWidgets.QComboBox()
+        self.variant_combo.currentTextChanged.connect(self._load_variant)
+        row1.addWidget(self.variant_combo, 1)
+        load_btn = QtWidgets.QPushButton("Load")
+        load_btn.clicked.connect(self._load_variant)
+        row1.addWidget(load_btn)
 
-        ttk.Label(row1, text="Min", style="Muted.TLabel").pack(side="left", padx=(16, 0))
-        ttk.Spinbox(row1, from_=40, to=60, textvariable=self.min_deck_var, width=6).pack(side="left", padx=(6, 12))
+        row1.addSpacing(10)
+        row1.addWidget(QtWidgets.QLabel("Min"))
+        self.min_spin = QtWidgets.QSpinBox()
+        self.min_spin.setRange(40, 60)
+        self.min_spin.setValue(40)
+        row1.addWidget(self.min_spin)
+        row1.addWidget(QtWidgets.QLabel("Max"))
+        self.max_spin = QtWidgets.QSpinBox()
+        self.max_spin.setRange(40, 60)
+        self.max_spin.setValue(60)
+        row1.addWidget(self.max_spin)
 
-        ttk.Label(row1, text="Max", style="Muted.TLabel").pack(side="left")
-        ttk.Spinbox(row1, from_=40, to=60, textvariable=self.max_deck_var, width=6).pack(side="left", padx=(6, 12))
+        self.goingfirst_check = QtWidgets.QCheckBox("Going first (draw 5)")
+        self.goingfirst_check.setChecked(True)
+        self.goingfirst_check.toggled.connect(lambda _checked: self._refresh_tag_priorities())
+        row1.addWidget(self.goingfirst_check)
+        row1.addStretch(1)
+        left.addLayout(row1)
 
-        ttk.Checkbutton(row1, text="Going first (draw 5)", variable=self.goingfirst_var).pack(side="left", padx=(6, 0))
+        row2 = QtWidgets.QHBoxLayout()
+        self.eval_label = QtWidgets.QLabel("Simulations per step")
+        row2.addWidget(self.eval_label)
+        self.eval_spin = QtWidgets.QSpinBox()
+        self.eval_spin.setRange(1_000, 5_000_000)
+        self.eval_spin.setSingleStep(10_000)
+        self.eval_spin.setValue(150_000)
+        row2.addWidget(self.eval_spin)
+        row2.addSpacing(10)
+        self.max_steps_label = QtWidgets.QLabel("Max steps")
+        row2.addWidget(self.max_steps_label)
+        self.max_steps_spin = QtWidgets.QSpinBox()
+        self.max_steps_spin.setRange(1, 5_000)
+        self.max_steps_spin.setValue(400)
+        row2.addWidget(self.max_steps_spin)
+        row2.addStretch(1)
+        left.addLayout(row2)
 
-        row2 = ttk.Frame(left, style="Card.TFrame")
-        row2.pack(fill="x", pady=(10, 0))
-        ttk.Label(row2, text="Simulations per step", style="Muted.TLabel").pack(side="left")
-        ttk.Entry(row2, textvariable=self.eval_num_var, width=10).pack(side="left", padx=(8, 16))
+        row3 = QtWidgets.QHBoxLayout()
+        row3.addWidget(QtWidgets.QLabel("Mode"))
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.addItems(["Local search", "Evolution"])
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        row3.addWidget(self.mode_combo)
+        row3.addSpacing(12)
+        self.deep_check = QtWidgets.QCheckBox("Deep search (exhaustive neighbors)")
+        self.deep_check.setChecked(True)
+        row3.addWidget(self.deep_check)
+        row3.addStretch(1)
+        left.addLayout(row3)
 
-        ttk.Label(row2, text="Max steps", style="Muted.TLabel").pack(side="left")
-        ttk.Entry(row2, textvariable=self.max_steps_var, width=8).pack(side="left", padx=(8, 16))
+        row4 = QtWidgets.QHBoxLayout()
+        self.dup_check = QtWidgets.QCheckBox("Penalize duplicate cards in hand")
+        row4.addWidget(self.dup_check)
+        row4.addWidget(QtWidgets.QLabel("Penalty per extra copy"))
+        self.dup_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.dup_slider.setRange(0, 100)
+        self.dup_slider.setValue(10)
+        self.dup_slider.setFixedWidth(self.TAG_SLIDER_WIDTH)
+        self.dup_value = QtWidgets.QLabel("10%")
+        row4.addWidget(self.dup_slider)
+        row4.addWidget(self.dup_value)
+        row4.addStretch(1)
+        left.addLayout(row4)
 
-        row3 = ttk.Frame(left, style="Card.TFrame")
-        row3.pack(fill="x", pady=(10, 0))
-        ttk.Checkbutton(
-            row3,
-            text="Deep search (exhaustive neighbors)",
-            variable=self.deep_search_var,
-        ).pack(side="left")
+        row5 = QtWidgets.QHBoxLayout()
+        row5.addWidget(QtWidgets.QLabel("Probability threshold"))
+        self.prob_threshold_spin = QtWidgets.QSpinBox()
+        self.prob_threshold_spin.setRange(0, 100)
+        self.prob_threshold_spin.setValue(0)
+        self.prob_threshold_spin.setSuffix("%")
+        row5.addWidget(self.prob_threshold_spin)
+        row5.addStretch(1)
+        left.addLayout(row5)
 
-        row4 = ttk.Frame(left, style="Card.TFrame")
-        row4.pack(fill="x", pady=(10, 0))
-        ttk.Checkbutton(
-            row4,
-            text="Penalize duplicate cards in hand",
-            variable=self.dup_penalty_var,
-        ).pack(side="left")
-        ttk.Label(row4, text="Penalty per extra copy", style="Muted.TLabel").pack(side="left", padx=(12, 0))
-        dup_scale = ttk.Scale(
-            row4,
-            from_=0.0,
-            to=100.0,
-            orient="horizontal",
-            variable=self.dup_penalty_weight_var,
-            length=180,
-        )
-        dup_scale.pack(side="left", padx=(6, 6))
-        dup_value = ttk.Label(row4, text=f"{self.dup_penalty_weight_var.get():.0f}%", width=5, style="Muted.TLabel")
-        dup_value.pack(side="left")
+        row6 = QtWidgets.QHBoxLayout()
+        row6.addWidget(QtWidgets.QLabel("Priority order"))
+        options = ["Handtrap means", "Duplicate penalty", "Tag options"]
+        defaults = ["Handtrap means", "Duplicate penalty", "Tag options"]
+        for idx in range(3):
+            row6.addWidget(QtWidgets.QLabel(str(idx + 1)))
+            combo = QtWidgets.QComboBox()
+            combo.addItems(options)
+            combo.setCurrentText(defaults[idx])
+            self.priority_order_combos.append(combo)
+            row6.addWidget(combo)
+        row6.addStretch(1)
+        left.addLayout(row6)
 
-        def update_dup_state() -> None:
-            if self.dup_penalty_var.get():
-                dup_scale.state(["!disabled"])
-                dup_value.state(["!disabled"])
-            else:
-                dup_scale.state(["disabled"])
-                dup_value.state(["disabled"])
+        self.dup_check.toggled.connect(self._update_dup_state)
+        self.dup_slider.valueChanged.connect(self._update_dup_label)
+        self._update_dup_state()
+        self._update_dup_label()
 
-        self.dup_penalty_var.trace_add("write", lambda *_: update_dup_state())
-        update_dup_state()
+        self.evo_box = QtWidgets.QFrame()
+        self.evo_box.setProperty("card", True)
+        evo_layout = QtWidgets.QGridLayout(self.evo_box)
+        evo_layout.setContentsMargins(12, 10, 12, 10)
+        evo_layout.setHorizontalSpacing(8)
+        evo_layout.setVerticalSpacing(6)
+        evo_layout.addWidget(QtWidgets.QLabel("Evolution settings"), 0, 0, 1, 4)
 
-        def _update_dup_label(*_args) -> None:
-            try:
-                dup_value.config(text=f"{self.dup_penalty_weight_var.get():.0f}%")
-            except Exception:
-                return
+        evo_layout.addWidget(QtWidgets.QLabel("Population"), 1, 0)
+        self.evo_pop_spin = QtWidgets.QSpinBox()
+        self.evo_pop_spin.setRange(10, 200)
+        self.evo_pop_spin.setValue(40)
+        evo_layout.addWidget(self.evo_pop_spin, 1, 1)
 
-        self.dup_penalty_weight_var.trace_add("write", _update_dup_label)
-        _update_dup_label()
+        evo_layout.addWidget(QtWidgets.QLabel("Elite"), 1, 2)
+        self.evo_elite_spin = QtWidgets.QSpinBox()
+        self.evo_elite_spin.setRange(1, 50)
+        self.evo_elite_spin.setValue(4)
+        evo_layout.addWidget(self.evo_elite_spin, 1, 3)
 
-        row_btn = ttk.Frame(left, style="Card.TFrame")
-        row_btn.pack(fill="x", pady=(10, 0))
-        row_btn.columnconfigure(1, weight=1)
-        self._opt_btn_frame = ttk.Frame(row_btn, style="Card.TFrame")
-        self._opt_btn_frame.grid(row=0, column=0, sticky="w")
-        self._opt_btn_main = ttk.Button(self._opt_btn_frame, style="Primary.TButton")
-        self._opt_btn_secondary = ttk.Button(self._opt_btn_frame, style="Small.TButton")
-        self._update_opt_buttons()
+        evo_layout.addWidget(QtWidgets.QLabel("Mutation %"), 2, 0)
+        self.evo_mut_spin = QtWidgets.QSpinBox()
+        self.evo_mut_spin.setRange(0, 100)
+        self.evo_mut_spin.setValue(20)
+        evo_layout.addWidget(self.evo_mut_spin, 2, 1)
 
-        status = ttk.Frame(row_btn, style="Card.TFrame")
-        status.grid(row=0, column=1, sticky="w", padx=(16, 0))
-        status.columnconfigure(0, weight=0)
-        status.columnconfigure(1, weight=1)
-        ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        self.step_progress = ttk.Progressbar(
-            status,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100,
-            length=200,
-            style="Slim.Horizontal.TProgressbar",
-        )
-        self.step_progress.grid(row=1, column=0, sticky="w", pady=(4, 6))
+        evo_layout.addWidget(QtWidgets.QLabel("Crossover %"), 2, 2)
+        self.evo_cross_spin = QtWidgets.QSpinBox()
+        self.evo_cross_spin.setRange(0, 100)
+        self.evo_cross_spin.setValue(70)
+        evo_layout.addWidget(self.evo_cross_spin, 2, 3)
 
-        ttk.Label(status, textvariable=self.sim_status_var, style="Muted.TLabel").grid(row=2, column=0, sticky="w")
-        self.sim_progress = ttk.Progressbar(
-            status,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100,
-            length=200,
-            style="Slim.Horizontal.TProgressbar",
-        )
-        self.sim_progress.grid(row=3, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(status, textvariable=self.eval_detail_var, style="Muted.TLabel").grid(
-            row=3,
-            column=1,
-            sticky="w",
-            padx=(12, 0),
-        )
+        left.addWidget(self.evo_box)
+        self.evo_box.hide()
 
-        self.tag_priority_box = ttk.LabelFrame(right, text="Tag priorities", padding=12, style="Card.TLabelframe")
-        self.tag_priority_box.pack(fill="y")
-        header = ttk.Frame(self.tag_priority_box, style="Card.TFrame")
-        header.pack(fill="x", pady=(0, 6))
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Prioritize tags", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        self.tag_priority_toggle = ttk.Button(
-            header,
-            text="Collapse",
-            style="Small.TButton",
-            command=self._toggle_tag_priorities,
-        )
-        self.tag_priority_toggle.grid(row=0, column=1, sticky="e")
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.setSpacing(12)
+        btn_col = QtWidgets.QVBoxLayout()
+        btn_col.addWidget(self.btn_optimize)
+        btn_col.addWidget(self.btn_pause)
+        btn_col.addWidget(self.btn_resume)
+        btn_col.addWidget(self.btn_abort)
+        btn_col.addStretch(1)
+        self.btn_optimize.clicked.connect(self.run)
+        self.btn_pause.clicked.connect(self.pause)
+        self.btn_resume.clicked.connect(self.resume)
+        self.btn_abort.clicked.connect(self.abort)
 
-        weight_row = ttk.Frame(self.tag_priority_box, style="Card.TFrame")
-        weight_row.pack(fill="x", pady=(0, 6))
-        weight_row.columnconfigure(1, weight=1, minsize=self._tag_slider_len)
-        ttk.Label(weight_row, text="Weight", width=self._tag_label_width, style="Muted.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        weight_scale = ttk.Scale(
-            weight_row,
-            from_=0.0,
-            to=100.0,
-            orient="horizontal",
-            variable=self.tag_priority_weight_var,
-            length=self._tag_slider_len,
-        )
-        weight_scale.grid(row=0, column=1, sticky="ew", padx=(6, 6))
-        weight_value = ttk.Label(
-            weight_row,
-            text=f"{self.tag_priority_weight_var.get():.0f}%",
-            width=self._tag_value_width,
-            style="Muted.TLabel",
-        )
-        weight_value.grid(row=0, column=2, sticky="e")
+        for btn in (self.btn_optimize, self.btn_pause, self.btn_resume, self.btn_abort):
+            btn.setFixedWidth(120)
+        self.btn_pause.hide()
+        self.btn_resume.hide()
+        self.btn_abort.hide()
 
-        def _update_weight_label(*_args) -> None:
-            try:
-                weight_value.config(text=f"{self.tag_priority_weight_var.get():.0f}%")
-            except Exception:
-                return
+        progress_col = QtWidgets.QVBoxLayout()
+        self.status_label.setWordWrap(True)
+        progress_col.addWidget(self.status_label)
+        self.step_progress.setValue(0)
+        self.step_progress.setFixedWidth(260)
+        progress_col.addWidget(self.step_progress)
 
-        self.tag_priority_weight_var.trace_add("write", _update_weight_label)
-        _update_weight_label()
+        eval_row = QtWidgets.QHBoxLayout()
+        eval_row.addWidget(self.eval_status_label)
+        self.eval_progress.setValue(0)
+        self.eval_progress.setFixedWidth(160)
+        eval_row.addWidget(self.eval_progress)
+        eval_row.addWidget(self.eval_detail, 1)
+        progress_col.addLayout(eval_row)
 
-        self.tag_priority_frame = ttk.Frame(self.tag_priority_box, style="Card.TFrame")
-        self.tag_priority_frame.pack(fill="x")
-        self._refresh_tag_priorities()
+        action_row.addLayout(btn_col)
+        action_row.addLayout(progress_col, 1)
+        action_row.setAlignment(btn_col, QtCore.Qt.AlignHCenter)
+        left.addLayout(action_row)
 
-        content = ttk.Panedwindow(outer, orient="horizontal")
-        content.pack(fill="both", expand=True, pady=(10, 0))
+        # Tag priorities panel
+        self.tag_priority_box = QtWidgets.QFrame()
+        self.tag_priority_box.setProperty("card", True)
+        self.tag_priority_layout = QtWidgets.QVBoxLayout(self.tag_priority_box)
+        self.tag_priority_layout.setContentsMargins(12, 10, 12, 10)
+        self.tag_priority_layout.setSpacing(8)
 
-        cards_box = ttk.LabelFrame(content, text="Per-card limits (0–3)", padding=14, style="Card.TLabelframe")
-        results = ttk.LabelFrame(content, text="Optimized list", padding=14, style="Card.TLabelframe")
-        content.add(cards_box, weight=3)
-        content.add(results, weight=2)
+        header = QtWidgets.QHBoxLayout()
+        header.addWidget(QtWidgets.QLabel("Tag targets (opening hand)"))
+        self.tag_toggle_btn = QtWidgets.QPushButton("Expand")
+        self.tag_toggle_btn.clicked.connect(self._toggle_tag_priorities)
+        header.addStretch(1)
+        header.addWidget(self.tag_toggle_btn)
+        self.tag_priority_layout.addLayout(header)
 
-        header = ttk.Frame(cards_box, style="Card.TFrame")
-        header.pack(fill="x")
-        header.columnconfigure(1, weight=1)
-        ttk.Label(header, text="🔒", width=3, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text="Card", style="Muted.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(header, text="Current", width=8, style="Muted.TLabel").grid(row=0, column=2, sticky="e")
-        ttk.Label(header, text="Min", width=6, style="Muted.TLabel").grid(row=0, column=3, sticky="e")
-        ttk.Label(header, text="Max", width=6, style="Muted.TLabel").grid(row=0, column=4, sticky="e")
+        weight_row = QtWidgets.QHBoxLayout()
+        weight_row.addWidget(QtWidgets.QLabel("Weight"))
+        self.tag_priority_weight_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.tag_priority_weight_slider.setRange(0, 100)
+        self.tag_priority_weight_slider.setValue(0)
+        self.tag_priority_weight_slider.setFixedWidth(self.TAG_SLIDER_WIDTH)
+        self.tag_priority_weight_value = QtWidgets.QLabel("0%")
+        weight_row.addWidget(self.tag_priority_weight_slider)
+        weight_row.addWidget(self.tag_priority_weight_value)
+        weight_row.addStretch(1)
+        self.tag_priority_layout.addLayout(weight_row)
+        self.tag_priority_weight_slider.valueChanged.connect(self._update_tag_weight_label)
+        self._update_tag_weight_label()
 
-        self.cards_canvas = tk.Canvas(cards_box, highlightthickness=0, bd=0)
-        scroll = ttk.Scrollbar(cards_box, orient="vertical", command=self.cards_canvas.yview)
-        self.cards_canvas.configure(yscrollcommand=scroll.set)
+        self.tag_rows_layout = QtWidgets.QVBoxLayout()
+        self.tag_priority_layout.addLayout(self.tag_rows_layout)
 
-        self.cards_inner = ttk.Frame(self.cards_canvas, style="Card.TFrame")
-        self.cards_inner.bind("<Configure>", lambda _e: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")))
-        self.cards_window_id = self.cards_canvas.create_window((0, 0), window=self.cards_inner, anchor="nw")
-        self.cards_canvas.bind("<Configure>", self._on_cards_canvas_configure)
+        right.addWidget(self.tag_priority_box)
+        right.addStretch(1)
 
-        self.cards_canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        settings_layout.addLayout(left, 1)
+        settings_layout.addLayout(right)
+        root.addWidget(settings)
 
-        self.result_summary = ttk.Label(results, text="No result yet.", style="Muted.TLabel")
-        self.result_summary.pack(anchor="w")
+        content = QtWidgets.QSplitter()
+        content.setOrientation(QtCore.Qt.Horizontal)
 
-        self.result_tree = ttk.Treeview(results, columns=("card", "qty", "delta", "lock"), show="headings", height=12)
-        for col, txt, w in [("card", "Card", 260), ("qty", "Qty", 70), ("delta", "Δ", 80), ("lock", "🔒", 50)]:
-            self.result_tree.heading(col, text=txt)
-            self.result_tree.column(col, width=w, anchor="w")
-        self.result_tree.column("qty", anchor="center")
-        self.result_tree.column("delta", anchor="center")
-        self.result_tree.column("lock", anchor="center")
-        attach_treeview_sorting(self.result_tree, {"card": "str", "qty": "num", "delta": "num", "lock": "str"})
-        self.result_tree.pack(fill="both", expand=True, pady=(8, 0))
+        cards_box = QtWidgets.QFrame()
+        cards_box.setProperty("card", True)
+        cards_layout = QtWidgets.QVBoxLayout(cards_box)
+        cards_layout.setContentsMargins(14, 12, 14, 12)
+        cards_layout.setSpacing(6)
+        cards_layout.addWidget(QtWidgets.QLabel("Per-card limits (0–3)"))
 
-        btns = ttk.Frame(results, style="Card.TFrame")
-        btns.pack(fill="x", pady=(10, 0))
-        ttk.Button(btns, text="Create variant from result", style="SmallPrimary.TButton", command=self._create_variant_from_result).pack(side="left")
+        header_row = QtWidgets.QGridLayout()
+        header_row.addWidget(QtWidgets.QLabel("🔒"), 0, 0)
+        header_row.addWidget(QtWidgets.QLabel("Card"), 0, 1)
+        header_row.addWidget(QtWidgets.QLabel("Current"), 0, 2)
+        header_row.addWidget(QtWidgets.QLabel("Min"), 0, 3)
+        header_row.addWidget(QtWidgets.QLabel("Max"), 0, 4)
+        cards_layout.addLayout(header_row)
 
-        style = ttk.Style(self.app)
-        style.configure("Slim.Horizontal.TProgressbar", thickness=8)
-        if self.result_tree:
-            self.result_tree.tag_configure("pos", foreground="#1a7f37")
-            self.result_tree.tag_configure("neg", foreground="#b42318")
-            self.result_tree.tag_configure("locked", foreground="#6b7280")
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.cards_inner = QtWidgets.QWidget()
+        self.cards_layout = QtWidgets.QGridLayout(self.cards_inner)
+        self.cards_layout.setColumnStretch(1, 1)
+        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(self.cards_inner)
+        cards_layout.addWidget(scroll, 1)
+
+        results_box = QtWidgets.QFrame()
+        results_box.setProperty("card", True)
+        results_layout = QtWidgets.QVBoxLayout(results_box)
+        results_layout.setContentsMargins(14, 12, 14, 12)
+        results_layout.setSpacing(8)
+
+        self.result_summary = QtWidgets.QLabel("No result yet.")
+        self.result_summary.setProperty("muted", True)
+        results_layout.addWidget(self.result_summary)
+
+        self.result_table = QtWidgets.QTableWidget(0, 4)
+        self.result_table.setHorizontalHeaderLabels(["Card", "Qty", "Δ", "🔒"])
+        self.result_table.verticalHeader().setVisible(False)
+        self.result_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.result_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.result_table.setSortingEnabled(False)
+        self.result_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.result_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.result_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        self.result_table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        results_layout.addWidget(self.result_table, 1)
+
+        btns = QtWidgets.QHBoxLayout()
+        create_btn = QtWidgets.QPushButton("Create variant from result")
+        create_btn.setProperty("primary", True)
+        create_btn.clicked.connect(self._create_variant_from_result)
+        btns.addWidget(create_btn)
+        btns.addStretch(1)
+        results_layout.addLayout(btns)
+
+        content.addWidget(cards_box)
+        content.addWidget(results_box)
+        content.setStretchFactor(0, 3)
+        content.setStretchFactor(1, 2)
+        root.addWidget(content, 1)
+
+        self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
+
+    # -------------------------
+    # Refresh
+    # -------------------------
 
     def refresh(self) -> None:
         names = [dv.name for dv in self.app.get_deck_variants_in_order()]
-        self.variant_combo["values"] = names
-        current = self.variant_var.get().strip()
+        self.variant_combo.blockSignals(True)
+        self.variant_combo.clear()
+        self.variant_combo.addItems(names)
+        self.variant_combo.blockSignals(False)
+        current = self.variant_combo.currentText().strip()
         if (not current or current not in names) and names:
-            self.variant_var.set(names[0])
+            self.variant_combo.setCurrentText(names[0])
         self._refresh_tag_priorities()
-        self._update_opt_buttons()
-        if not self.card_rows:
-            self._load_variant()
-
-    def _on_cards_canvas_configure(self, event: tk.Event) -> None:
-        if self.cards_canvas is None or self.cards_window_id is None:
-            return
-        try:
-            self.cards_canvas.itemconfigure(self.cards_window_id, width=event.width)
-        except Exception:
-            return
-
-    def _find_variant_by_name(self, name: str) -> Optional[Any]:
-        for dv in self.app.get_deck_variants_in_order():
-            if dv.name == name:
-                return dv
-        return None
+        current_variant = self._find_variant_by_name(self.variant_combo.currentText().strip())
+        if current_variant:
+            current_cards = set(current_variant.decklist.keys())
+            if current_variant.id != self._loaded_variant_id or current_cards != self._loaded_cards:
+                self._load_variant()
 
     def _load_variant(self) -> None:
-        if not self.cards_inner:
-            return
-        name = self.variant_var.get().strip()
+        name = self.variant_combo.currentText().strip()
         variant = self._find_variant_by_name(name)
         if not variant:
             return
 
         # clear rows
-        for child in self.cards_inner.winfo_children():
-            child.destroy()
+        for i in reversed(range(self.cards_layout.count())):
+            item = self.cards_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().deleteLater()
         self.card_rows.clear()
 
         cards = safe_sorted_cards(list(variant.decklist.keys()))
+        self._loaded_variant_id = variant.id
+        self._loaded_cards = set(cards)
         for i, card in enumerate(cards):
-            row = ttk.Frame(self.cards_inner, style="Card.TFrame")
-            row.grid(row=i, column=0, sticky="ew", pady=2)
-            row.columnconfigure(1, weight=1)
-
             cur_qty = int(variant.decklist.get(card, 0))
-            lock_var = tk.BooleanVar(value=False)
-            lock_text = tk.StringVar(value="🔓")
-            lock_btn = ttk.Button(
-                row,
-                textvariable=lock_text,
-                width=3,
-                style="Small.TButton",
-                command=lambda c=card: self._toggle_lock(c),
-            )
-            lock_btn.grid(row=0, column=0, sticky="w")
+            lock_btn = QtWidgets.QPushButton("🔓")
+            lock_btn.setFixedWidth(32)
+            min_spin = QtWidgets.QSpinBox()
+            min_spin.setRange(0, 3)
+            max_spin = QtWidgets.QSpinBox()
+            max_spin.setRange(0, 3)
+            min_spin.setValue(0)
+            max_spin.setValue(3)
 
-            ttk.Label(row, text=card).grid(row=0, column=1, sticky="w")
-            ttk.Label(row, text=str(cur_qty), width=8, style="Muted.TLabel").grid(row=0, column=2, sticky="e")
+            lock_btn.clicked.connect(lambda _=None, c=card: self._toggle_lock(c))
 
-            min_var = tk.IntVar(value=0)
-            max_var = tk.IntVar(value=3)
-            min_spin = ttk.Spinbox(row, from_=0, to=3, textvariable=min_var, width=6)
-            max_spin = ttk.Spinbox(row, from_=0, to=3, textvariable=max_var, width=6)
-            min_spin.grid(row=0, column=3, sticky="e")
-            max_spin.grid(row=0, column=4, sticky="e", padx=(6, 0))
+            self.cards_layout.addWidget(lock_btn, i, 0)
+            self.cards_layout.addWidget(QtWidgets.QLabel(card), i, 1)
+            self.cards_layout.addWidget(QtWidgets.QLabel(str(cur_qty)), i, 2)
+            self.cards_layout.addWidget(min_spin, i, 3)
+            self.cards_layout.addWidget(max_spin, i, 4)
 
             self.card_rows[card] = {
-                "min_var": min_var,
-                "max_var": max_var,
                 "current": cur_qty,
-                "lock_var": lock_var,
-                "lock_text": lock_text,
+                "lock": False,
                 "lock_btn": lock_btn,
                 "min_spin": min_spin,
                 "max_spin": max_spin,
@@ -390,295 +501,188 @@ class OptimizeTabView:
         self._last_base = None
         self._last_prob = None
         self._last_base_prob = None
-        if self.result_tree:
-            for r in self.result_tree.get_children():
-                self.result_tree.delete(r)
+        if self.result_table:
+            self.result_table.setRowCount(0)
         if self.result_summary:
-            self.result_summary.config(text="No result yet.")
+            self.result_summary.setText("No result yet.")
+
+        self._restore_paused_state(variant.id)
+
+    def _find_variant_by_name(self, name: str) -> Optional[Any]:
+        for dv in self.app.get_deck_variants_in_order():
+            if dv.name == name:
+                return dv
+        return None
+
+    # -------------------------
+    # Tag priorities
+    # -------------------------
 
     def _refresh_tag_priorities(self) -> None:
-        if self.tag_priority_frame is None:
+        if not self.tag_rows_layout:
             return
-        tags = self.app.get_all_tags()
-
-        existing_values: Dict[str, float] = {}
-        for tag, var in self.tag_priority_vars.items():
-            try:
-                existing_values[tag] = float(var.get())
-            except Exception:
-                existing_values[tag] = 0.0
-
-        self.tag_priority_vars = {}
-        for tag in tags:
-            self.tag_priority_vars[tag] = tk.DoubleVar(value=existing_values.get(tag, 0.0))
-
-        for child in self.tag_priority_frame.winfo_children():
-            child.destroy()
-
-        if self.tag_priority_collapsed:
+        if self._refreshing_tags:
             return
+        self._refreshing_tags = True
+        container = self.tag_priority_box
+        if container:
+            container.setUpdatesEnabled(False)
+        try:
+            tags = self.app.get_all_tags()
+            max_val = self._tag_priority_max()
 
-        if not tags:
-            ttk.Label(self.tag_priority_frame, text="No tags found.", style="Muted.TLabel").pack(anchor="w")
-            return
+            existing_values: Dict[str, int] = dict(self._tag_priority_values)
+            existing_values = {k: min(int(v), max_val) for k, v in existing_values.items()}
+            self._tag_priority_values = {tag: existing_values.get(tag, 0) for tag in tags}
 
-        table = ttk.Frame(self.tag_priority_frame, style="Card.TFrame")
-        table.pack(fill="x")
-        table.columnconfigure(1, weight=1, minsize=self._tag_slider_len)
+            for i in reversed(range(self.tag_rows_layout.count())):
+                item = self.tag_rows_layout.takeAt(i)
+                if item and item.widget():
+                    item.widget().deleteLater()
+                if item and item.layout():
+                    while item.layout().count():
+                        sub = item.layout().takeAt(0)
+                        if sub.widget():
+                            sub.widget().deleteLater()
 
-        ttk.Label(
-            table,
-            text="Tag",
-            width=self._tag_label_width,
-            style="Muted.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(table, text="Priority", style="Muted.TLabel").grid(row=0, column=1, sticky="w", padx=(6, 0))
+            self.tag_rows.clear()
 
-        for row_idx, tag in enumerate(tags, start=1):
-            ttk.Label(table, text=tag, width=self._tag_label_width).grid(row=row_idx, column=0, sticky="w")
-            var = self.tag_priority_vars[tag]
-            scale = ttk.Scale(
-                table,
-                from_=0.0,
-                to=2.0,
-                orient="horizontal",
-                variable=var,
-                length=self._tag_slider_len,
-            )
-            scale.grid(row=row_idx, column=1, sticky="ew", padx=(6, 6))
-            val_label = ttk.Label(
-                table,
-                text=f"{var.get():.2f}",
-                width=self._tag_value_width,
-                style="Muted.TLabel",
-            )
-            val_label.grid(row=row_idx, column=2, sticky="e")
+            if self.tag_priority_collapsed:
+                return
 
-            def _update_label(*_args, v=var, lbl=val_label) -> None:
-                try:
-                    lbl.config(text=f"{v.get():.2f}")
-                except Exception:
-                    return
+            if not tags:
+                self.tag_rows_layout.addWidget(QtWidgets.QLabel("No tags found."))
+                return
 
-            var.trace_add("write", _update_label)
-            _update_label()
+            for tag in tags:
+                row_widget = QtWidgets.QWidget()
+                row = QtWidgets.QHBoxLayout(row_widget)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(6)
+                row.addWidget(QtWidgets.QLabel(tag))
+                slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+                slider.setRange(0, max_val)
+                slider.setValue(existing_values.get(tag, 0))
+                slider.setFixedWidth(self.TAG_SLIDER_WIDTH)
+                value = QtWidgets.QLabel(f"{slider.value()}")
+                slider.valueChanged.connect(lambda v, t=tag, lbl=value: self._update_tag_value(t, v, lbl))
+                row.addWidget(slider)
+                row.addWidget(value)
+                row.addStretch(1)
+
+                self.tag_rows_layout.addWidget(row_widget)
+                self.tag_rows[tag] = {"slider": slider, "value": value}
+        finally:
+            if container:
+                container.setUpdatesEnabled(True)
+            self._refreshing_tags = False
 
     def _toggle_tag_priorities(self) -> None:
         self.tag_priority_collapsed = not self.tag_priority_collapsed
-        if self.tag_priority_frame is None or self.tag_priority_toggle is None:
-            return
         if self.tag_priority_collapsed:
-            self.tag_priority_frame.pack_forget()
-            self.tag_priority_toggle.config(text="Expand")
+            self.tag_toggle_btn.setText("Expand")
         else:
-            self.tag_priority_frame.pack(fill="x")
-            self.tag_priority_toggle.config(text="Collapse")
-            self._refresh_tag_priorities()
-
-    def _current_variant(self) -> Optional[Any]:
-        name = self.variant_var.get().strip()
-        return self._find_variant_by_name(name)
-
-    def _get_saved_opt_state(self) -> Optional[Dict[str, Any]]:
-        variant = self._current_variant()
-        if not variant:
-            return None
-        return self.app.optimize_state.get(str(variant.id))
-
-    def _set_saved_opt_state(self, state: Optional[Dict[str, Any]], variant_id: Optional[str] = None) -> None:
-        vid = variant_id
-        if not vid:
-            variant = self._current_variant()
-            if not variant:
-                return
-            vid = str(variant.id)
-        if state is None:
-            self.app.optimize_state.pop(str(vid), None)
-        else:
-            self.app.optimize_state[str(vid)] = state
-
-    def _set_lock_state(self, card: str, locked: bool, min_v: int, max_v: int) -> None:
-        row = self.card_rows.get(card)
-        if not row:
-            return
-        row["min_var"].set(int(min_v))
-        row["max_var"].set(int(max_v))
-        row["lock_var"].set(bool(locked))
-        if locked:
-            row["min_spin"].state(["disabled"])
-            row["max_spin"].state(["disabled"])
-            row["lock_text"].set("🔒")
-        else:
-            row["min_spin"].state(["!disabled"])
-            row["max_spin"].state(["!disabled"])
-            row["lock_text"].set("🔓")
-
-    def _apply_state_to_ui(self, state: Dict[str, Any]) -> bool:
-        variant = self._current_variant()
-        if not variant:
-            return False
-        if str(state.get("variant_id", "")) and str(state.get("variant_id")) != str(variant.id):
-            return False
-
-        settings = state.get("settings", {}) or {}
-        self.min_deck_var.set(int(settings.get("deck_min", self.min_deck_var.get())))
-        self.max_deck_var.set(int(settings.get("deck_max", self.max_deck_var.get())))
-        self.eval_num_var.set(int(settings.get("eval_num", self.eval_num_var.get())))
-        self.max_steps_var.set(int(settings.get("max_steps", self.max_steps_var.get())))
-        self.deep_search_var.set(bool(settings.get("deep_search", self.deep_search_var.get())))
-        self.goingfirst_var.set(bool(settings.get("goingfirst", self.goingfirst_var.get())))
-        self.dup_penalty_var.set(bool(settings.get("dup_penalty_enabled", self.dup_penalty_var.get())))
-        self.dup_penalty_weight_var.set(float(settings.get("dup_penalty_weight", self.dup_penalty_weight_var.get())))
-        self.tag_priority_weight_var.set(float(settings.get("tag_priority_weight", self.tag_priority_weight_var.get())))
-
-        tag_priorities = settings.get("tag_priorities", {}) or {}
+            self.tag_toggle_btn.setText("Collapse")
         self._refresh_tag_priorities()
-        for tag, val in tag_priorities.items():
-            if tag in self.tag_priority_vars:
-                try:
-                    self.tag_priority_vars[tag].set(float(val))
-                except Exception:
-                    continue
 
-        if not self.card_rows:
-            self._load_variant()
-
-        constraints = state.get("constraints", {}) or {}
-        locked_cards = set(state.get("locked_cards", []) or [])
-        for card, row in self.card_rows.items():
-            min_v, max_v = constraints.get(card, (int(row["min_var"].get()), int(row["max_var"].get())))
-            self._set_lock_state(card, card in locked_cards, min_v, max_v)
-        return True
-
-    def _update_opt_buttons(self) -> None:
-        if self._opt_btn_frame is None or self._opt_btn_main is None or self._opt_btn_secondary is None:
+    def _update_tag_weight_label(self, value: Optional[int] = None) -> None:
+        if self.tag_priority_weight_value is None:
             return
-        for btn in (self._opt_btn_main, self._opt_btn_secondary):
-            btn.grid_forget()
+        if value is None:
+            value = int(self.tag_priority_weight_slider.value())
+        self.tag_priority_weight_value.setText(f"{value}%")
 
-        running = self._opt_thread is not None and self._opt_thread.is_alive()
-        saved_state = self._get_saved_opt_state()
-        btn_width = 10
+    def _tag_priority_max(self) -> int:
+        if self.goingfirst_check and not bool(self.goingfirst_check.isChecked()):
+            return 6
+        return 5
 
-        if running:
-            self._opt_btn_main.config(text="Pause", command=self._pause_optimization, width=btn_width)
-            self._opt_btn_secondary.config(
-                text="Abort",
-                command=self._abort_optimization,
-                style="SmallDanger.TButton",
-                width=btn_width,
-            )
-            self._opt_btn_main.grid(row=0, column=0, sticky="w")
-            self._opt_btn_secondary.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        elif saved_state:
-            self._opt_btn_main.config(text="Resume", command=self._resume_optimization, width=btn_width)
-            self._opt_btn_secondary.config(
-                text="Discard",
-                command=self._discard_saved_optimization,
-                style="Small.TButton",
-                width=btn_width,
-            )
-            self._opt_btn_main.grid(row=0, column=0, sticky="w")
-            self._opt_btn_secondary.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        else:
-            self._opt_btn_main.config(text="Optimize", command=self.run, width=btn_width)
-            self._opt_btn_main.grid(row=0, column=0, sticky="w")
-
-    def _pause_optimization(self) -> None:
-        self._opt_pause_requested.set()
-        self._update_opt_buttons()
-
-    def _abort_optimization(self) -> None:
-        self._opt_abort_requested.set()
-        self._update_opt_buttons()
-
-    def _resume_optimization(self) -> None:
-        state = self._get_saved_opt_state()
-        if not state:
+    def _on_mode_changed(self, _text: str) -> None:
+        if not self.mode_combo:
             return
-        if not self._apply_state_to_ui(state):
-            messagebox.showwarning("Resume failed", "Saved optimization doesn't match current deck.")
-            return
-        self._opt_resume_state = state
-        self.run()
+        mode = self.mode_combo.currentText().strip()
+        is_evo = mode.lower().startswith("evolution")
+        if self.evo_box:
+            self.evo_box.setVisible(is_evo)
+        if self.deep_check:
+            self.deep_check.setVisible(not is_evo)
+        if self.eval_label:
+            self.eval_label.setText("Simulations per eval" if is_evo else "Simulations per step")
+        if self.max_steps_label:
+            self.max_steps_label.setText("Generations" if is_evo else "Max steps")
 
-    def _discard_saved_optimization(self) -> None:
-        self._set_saved_opt_state(None)
-        self._update_opt_buttons()
+    def _priority_order_from_ui(self) -> List[str]:
+        mapping = {
+            "handtrap means": "handtrap",
+            "duplicate penalty": "duplicates",
+            "tag options": "tags",
+        }
+        order: List[str] = []
+        for combo in self.priority_order_combos:
+            text = combo.currentText().strip().lower()
+            key = mapping.get(text)
+            if key and key not in order:
+                order.append(key)
+        for key in ("handtrap", "duplicates", "tags"):
+            if key not in order:
+                order.append(key)
+        return order
 
-    def _active_tag_priorities(self) -> Dict[str, float]:
-        weights: Dict[str, float] = {}
-        for tag, var in self.tag_priority_vars.items():
-            try:
-                val = float(var.get())
-            except Exception:
-                val = 0.0
-            if val > 0:
-                weights[tag] = val
-        return weights
+    def _set_priority_order_ui(self, order: List[str]) -> None:
+        mapping = {
+            "handtrap": "Handtrap means",
+            "duplicates": "Duplicate penalty",
+            "tags": "Tag options",
+        }
+        picks = []
+        for key in order:
+            label = mapping.get(str(key).strip().lower())
+            if label and label not in picks:
+                picks.append(label)
+        for label in ("Handtrap means", "Duplicate penalty", "Tag options"):
+            if label not in picks:
+                picks.append(label)
+        for combo, label in zip(self.priority_order_combos, picks):
+            combo.setCurrentText(label)
 
-    def _tag_priority_score(self, counts: Dict[str, int], deckcount: int) -> float:
-        weight_factor = max(0.0, min(1.0, float(self.tag_priority_weight_var.get()) / 100.0))
-        if weight_factor <= 0.0:
-            return 0.0
-        weights = self._active_tag_priorities()
-        if not weights or deckcount <= 0:
-            return 0.0
-        tag_totals: Counter = Counter()
-        for card, qty in counts.items():
-            if qty <= 0:
-                continue
-            meta = self.app.card_meta.get(card)
-            if not meta:
-                continue
-            for tag in (meta.tags or []):
-                t = str(tag).strip()
-                if t:
-                    tag_totals[t] += qty
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
-            return 0.0
-        score = 0.0
-        for tag, weight in weights.items():
-            score += weight * (tag_totals.get(tag, 0) / deckcount)
-        return (score / total_weight) * weight_factor
+    def _update_tag_value(self, tag: str, value: int, label: QtWidgets.QLabel) -> None:
+        self._tag_priority_values[tag] = int(value)
+        label.setText(f"{int(value)}")
 
-    def _auto_chunk(self, num_hands: int) -> int:
-        if num_hands <= 0:
-            return 1_000
-        target = max(1_000, num_hands // 20)
-        return min(num_hands, min(50_000, target))
+    # -------------------------
+    # Locks and constraints
+    # -------------------------
 
     def _toggle_lock(self, card: str) -> None:
         row = self.card_rows.get(card)
         if not row:
             return
-        locked = not bool(row["lock_var"].get())
-        row["lock_var"].set(locked)
+        locked = not bool(row["lock"])
+        row["lock"] = locked
         cur_qty = int(row["current"])
 
         if locked:
-            row["last_min"] = int(row["min_var"].get())
-            row["last_max"] = int(row["max_var"].get())
+            row["last_min"] = int(row["min_spin"].value())
+            row["last_max"] = int(row["max_spin"].value())
             locked_val = max(0, min(3, cur_qty))
-            row["min_var"].set(locked_val)
-            row["max_var"].set(locked_val)
-            row["min_spin"].state(["disabled"])
-            row["max_spin"].state(["disabled"])
-            row["lock_text"].set("🔒")
+            row["min_spin"].setValue(locked_val)
+            row["max_spin"].setValue(locked_val)
+            row["min_spin"].setEnabled(False)
+            row["max_spin"].setEnabled(False)
+            row["lock_btn"].setText("🔒")
         else:
-            row["min_var"].set(int(row.get("last_min", 0)))
-            row["max_var"].set(int(row.get("last_max", 3)))
-            row["min_spin"].state(["!disabled"])
-            row["max_spin"].state(["!disabled"])
-            row["lock_text"].set("🔓")
+            row["min_spin"].setValue(int(row["last_min"]))
+            row["max_spin"].setValue(int(row["last_max"]))
+            row["min_spin"].setEnabled(True)
+            row["max_spin"].setEnabled(True)
+            row["lock_btn"].setText("🔓")
 
     def _collect_constraints(self) -> Dict[str, Tuple[int, int]]:
         constraints: Dict[str, Tuple[int, int]] = {}
         for card, row in self.card_rows.items():
-            min_v = int(row["min_var"].get())
-            max_v = int(row["max_var"].get())
-            if bool(row.get("lock_var", tk.BooleanVar(value=False)).get()):
+            min_v = int(row["min_spin"].value())
+            max_v = int(row["max_spin"].value())
+            if bool(row["lock"]):
                 cur_qty = max(0, min(3, int(row["current"])))
                 min_v = cur_qty
                 max_v = cur_qty
@@ -686,50 +690,12 @@ class OptimizeTabView:
             max_v = max(0, min(3, max_v))
             if min_v > max_v:
                 min_v, max_v = max_v, min_v
-                row["min_var"].set(min_v)
-                row["max_var"].set(max_v)
+                row["min_spin"].setValue(min_v)
+                row["max_spin"].setValue(max_v)
             constraints[card] = (min_v, max_v)
         return constraints
 
-    def _eval_prob(
-        self,
-        decklist: Dict[str, int],
-        deckcount: int,
-        num_hands: int,
-        goingfirst: bool,
-        dup_penalty_weight: float,
-        executor: Optional[ProcessPoolExecutor] = None,
-    ) -> float:
-        """Evaluate opening probability for a given decklist/deckcount."""
-        all_cards = self.app.get_all_deck_cards()
-        decklist = {c: decklist.get(c, 0) for c in all_cards}
-        total = deck_size_positive(decklist)
-        deckcount = max(int(deckcount), total)
-
-        report = simulate_opening_stats(
-            decklist=decklist,
-            ideal_hands=[h.to_dict() for h in self.app.ideal_hands.values()],
-            handtrap_effects=self.app.handtrap_effects,
-            trap_defs=self.app.handtrap_defs,
-            card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
-            deckcount=deckcount,
-            num_hands=num_hands,
-            goingfirst=goingfirst,
-            fill_blanks=True,
-            chunk_size=self._auto_chunk(num_hands),
-            executor=executor,
-            dup_penalty_weight=dup_penalty_weight,
-        )
-        if dup_penalty_weight > 0:
-            return float(report["opening_probability_any_ideal_hand_penalized"])
-        return float(report["opening_probability_any_ideal_hand"])
-
-    def _reduce_to_max(
-        self,
-        counts: Dict[str, int],
-        constraints: Dict[str, Tuple[int, int]],
-        deck_max: int,
-    ) -> Dict[str, int]:
+    def _reduce_to_max(self, counts: Dict[str, int], constraints: Dict[str, Tuple[int, int]], deck_max: int) -> Dict[str, int]:
         total = sum(counts.values())
         if total <= deck_max:
             return counts
@@ -747,12 +713,7 @@ class OptimizeTabView:
                 break
         return counts
 
-    def _increase_to_min(
-        self,
-        counts: Dict[str, int],
-        constraints: Dict[str, Tuple[int, int]],
-        deck_min: int,
-    ) -> Dict[str, int]:
+    def _increase_to_min(self, counts: Dict[str, int], constraints: Dict[str, Tuple[int, int]], deck_min: int) -> Dict[str, int]:
         total = sum(counts.values())
         if total >= deck_min:
             return counts
@@ -770,675 +731,547 @@ class OptimizeTabView:
                 break
         return counts
 
+    # -------------------------
+    # Optimization run
+    # -------------------------
+
     def run(self) -> None:
-        """Run the optimizer in a background thread."""
-        if self._opt_thread is not None and self._opt_thread.is_alive():
-            return
         if not self.app.ideal_hands:
-            messagebox.showwarning("Missing data", "No ideal hands defined.")
+            QtWidgets.QMessageBox.warning(self, "Missing data", "No ideal hands defined.")
             return
-        name = self.variant_var.get().strip()
-        variant = self._find_variant_by_name(name)
+        variant = self._find_variant_by_name(self.variant_combo.currentText().strip())
         if not variant:
-            messagebox.showwarning("Missing data", "Please select a deck variant.")
+            QtWidgets.QMessageBox.warning(self, "Missing data", "Please select a deck variant.")
             return
+        self._clear_state(variant.id)
 
-        resume_state = self._opt_resume_state
-        self._opt_resume_state = None
-        if resume_state is None:
-            resume_state = self._get_saved_opt_state()
-        if resume_state:
-            if str(resume_state.get("variant_id", "")) not in ("", str(variant.id)):
-                messagebox.showwarning("Resume failed", "Saved optimization doesn't match current deck.")
-                return
-            state_cards = set((resume_state.get("constraints", {}) or {}).keys())
-            if state_cards and state_cards != set(variant.decklist.keys()):
-                messagebox.showwarning("Resume failed", "Decklist changed since the optimization was saved.")
-                return
-            self._set_saved_opt_state(None, variant_id=str(variant.id))
-
-        try:
-            deck_min = int(self.min_deck_var.get())
-            deck_max = int(self.max_deck_var.get())
-        except Exception:
-            messagebox.showwarning("Invalid value", "Deck size limits must be numbers.")
-            return
+        deck_min = int(self.min_spin.value())
+        deck_max = int(self.max_spin.value())
         if deck_min > deck_max:
-            messagebox.showwarning("Invalid value", "Deck min cannot be greater than max.")
+            QtWidgets.QMessageBox.warning(self, "Invalid value", "Deck min cannot be greater than max.")
             return
 
-        try:
-            num = int(self.eval_num_var.get())
-            if num <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showwarning("Invalid value", "Simulations per step must be a positive integer.")
+        num = int(self.eval_spin.value())
+        if num <= 0:
+            QtWidgets.QMessageBox.warning(self, "Invalid value", "Simulations per step must be a positive integer.")
             return
 
-        try:
-            max_steps = int(self.max_steps_var.get())
-            if max_steps <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showwarning("Invalid value", "Max steps must be a positive integer.")
+        max_steps = int(self.max_steps_spin.value())
+        if max_steps <= 0:
+            QtWidgets.QMessageBox.warning(self, "Invalid value", "Max steps must be a positive integer.")
             return
 
-        deep_search = bool(self.deep_search_var.get())
+        mode = "local"
+        if self.mode_combo and self.mode_combo.currentText().strip().lower().startswith("evolution"):
+            mode = "evolution"
+        self._active_mode = mode
 
-        dup_penalty_enabled = bool(self.dup_penalty_var.get())
+        deep_search = bool(self.deep_check.isChecked()) if mode == "local" else False
+        goingfirst = bool(self.goingfirst_check.isChecked())
+
         dup_penalty_weight = 0.0
-        if dup_penalty_enabled:
-            try:
-                dup_penalty_weight = float(self.dup_penalty_weight_var.get())
-            except Exception:
-                messagebox.showwarning("Invalid value", "Penalty weight must be a number.")
-                return
-            if dup_penalty_weight < 0 or dup_penalty_weight > 100:
-                messagebox.showwarning("Invalid value", "Penalty must be between 0 and 100.")
-                return
-            dup_penalty_weight = min(100.0, dup_penalty_weight) / 100.0
+        if self.dup_check.isChecked():
+            dup_penalty_weight = float(self.dup_slider.value()) / 100.0
 
         constraints = self._collect_constraints()
-        locked_cards = {card for card, row in self.card_rows.items() if bool(row["lock_var"].get())}
+        locked_cards = [card for card, row in self.card_rows.items() if bool(row["lock"])]
         min_total = sum(v[0] for v in constraints.values())
         if min_total > deck_max:
-            messagebox.showwarning("Invalid limits", "Sum of minimums exceeds deck max.")
+            QtWidgets.QMessageBox.warning(self, "Invalid limits", "Sum of minimums exceeds deck max.")
             return
 
-        goingfirst = bool(self.goingfirst_var.get())
-        tag_priorities_state = {k: float(v.get()) for k, v in self.tag_priority_vars.items()}
-        settings_state = {
-            "deck_min": int(deck_min),
-            "deck_max": int(deck_max),
-            "eval_num": int(num),
-            "max_steps": int(max_steps),
-            "deep_search": bool(deep_search),
-            "goingfirst": bool(goingfirst),
-            "dup_penalty_enabled": bool(dup_penalty_enabled),
-            "dup_penalty_weight": float(self.dup_penalty_weight_var.get()),
-            "tag_priority_weight": float(self.tag_priority_weight_var.get()),
-            "tag_priorities": tag_priorities_state,
-        }
+        bench_limits: Dict[str, int] = {}
+        if getattr(variant, "bench", None):
+            for card, qty in (variant.bench or {}).items():
+                if card in constraints:
+                    continue
+                max_qty = max(0, min(3, int(qty)))
+                if max_qty <= 0:
+                    continue
+                bench_limits[card] = max_qty
+                constraints[card] = (0, max_qty)
 
-        self.status_var.set("Optimizing…")
-        self.step_progress["value"] = 0
-        self.sim_progress["value"] = 0
-        self.sim_status_var.set("")
-        self.eval_detail_var.set("")
-        self.eta_var.set("Estimating…")
-        self._last_dup_penalty_enabled = dup_penalty_enabled
-        self._last_dup_penalty_weight = dup_penalty_weight
-        self._opt_pause_requested.clear()
-        self._opt_abort_requested.clear()
-        self._update_opt_buttons()
+        base_counts = {c: int(variant.decklist.get(c, 0)) for c in constraints.keys()}
+        for card in bench_limits.keys():
+            base_counts.setdefault(card, 0)
+        for card, (min_v, max_v) in constraints.items():
+            base_counts[card] = max(min_v, min(max_v, base_counts.get(card, 0)))
 
-        def worker() -> None:
-            executor: Optional[ProcessPoolExecutor] = None
-            try:
-                resume_state_local = resume_state
-                if resume_state_local:
-                    base_counts = dict(resume_state_local.get("base_counts", {}) or {})
-                    base_counts = {c: int(base_counts.get(c, variant.decklist.get(c, 0))) for c in constraints.keys()}
-                    base_deckcount = int(resume_state_local.get("base_deckcount", deck_min))
-                else:
-                    base_counts = {c: int(variant.decklist.get(c, 0)) for c in constraints.keys()}
-                    for card, (min_v, max_v) in constraints.items():
-                        base_counts[card] = max(min_v, min(max_v, base_counts.get(card, 0)))
+        base_counts = self._reduce_to_max(base_counts, constraints, deck_max)
+        base_counts = self._increase_to_min(base_counts, constraints, deck_min)
+        total = deck_size_positive(base_counts)
+        base_deckcount = max(deck_min, total)
+        if base_deckcount > deck_max:
+            base_deckcount = deck_max
 
-                    base_counts = self._reduce_to_max(base_counts, constraints, deck_max)
+        tag_weight = float(self.tag_priority_weight_slider.value()) / 100.0
+        tag_priorities = {tag: float(val) for tag, val in self._tag_priority_values.items() if val > 0}
 
-                    base_total = deck_size_positive(base_counts)
-                    base_deckcount = max(deck_min, base_total)
-                    if base_deckcount > deck_max:
-                        base_deckcount = deck_max
+        evo_population = int(self.evo_pop_spin.value()) if self.evo_pop_spin else 40
+        evo_elite = int(self.evo_elite_spin.value()) if self.evo_elite_spin else 4
+        if mode == "evolution" and evo_elite > evo_population:
+            QtWidgets.QMessageBox.warning(self, "Invalid value", "Elite cannot exceed population.")
+            return
+        evo_mut_rate = float(self.evo_mut_spin.value()) / 100.0 if self.evo_mut_spin else 0.2
+        evo_cross_rate = float(self.evo_cross_spin.value()) / 100.0 if self.evo_cross_spin else 0.7
+        prob_threshold = float(self.prob_threshold_spin.value()) / 100.0 if self.prob_threshold_spin else 0.0
+        priority_order = self._priority_order_from_ui()
 
-                max_workers = max(1, os.cpu_count() or 1)
-                if max_workers > 1:
-                    try:
-                        ctx = mp.get_context("spawn")
-                    except Exception:
-                        ctx = mp.get_context()
-                    executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)
+        settings = OptimizeSettings(
+            deck_min=deck_min,
+            deck_max=deck_max,
+            max_steps=max_steps,
+            sims_per_step=num,
+            goingfirst=goingfirst,
+            deep_search=deep_search,
+            dup_penalty_weight=dup_penalty_weight,
+            tag_weight=tag_weight,
+            tag_priorities=tag_priorities,
+            prob_threshold=prob_threshold,
+            priority_order=priority_order,
+            evo_population=evo_population,
+            evo_elite=evo_elite,
+            evo_mutation_rate=evo_mut_rate,
+            evo_crossover_rate=evo_cross_rate,
+        )
 
-                cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], Tuple[float, float]] = {}
+        ideal_list = [h.to_dict() for h in self.app.ideal_hands.values()]
+        sim_context = build_simulation_context(
+            ideal_hands=ideal_list,
+            handtrap_effects=self.app.handtrap_effects,
+            trap_defs=self.app.handtrap_defs,
+            card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+        )
 
-                def update_step_ui(step_idx: int, eval_done: int, eval_total: int, detail: str = "") -> None:
-                    frac = 0.0
-                    if eval_total > 0:
-                        frac = min(1.0, max(0.0, eval_done / eval_total))
-                    pct_steps = int(((step_idx + frac) / max_steps) * 100)
-                    pct = pct_steps
-                    msg = f"Optimizing… step {step_idx + 1}/{max_steps}"
-                    eta_text = self.eta_var.get().strip()
-                    if eta_text:
-                        msg += f" | ETA {eta_text}"
-                    self.app.after(0, lambda p=pct: self.step_progress.config(value=p))
-                    self.app.after(0, lambda s=msg: self.status_var.set(s))
-
-                    eval_pct = int((eval_done * 100 / eval_total)) if eval_total > 0 else 0
-                    eval_msg = ""
-                    if eval_total > 0:
-                        eval_msg = f"Evaluating… {eval_done}/{eval_total}"
-                    self.app.after(0, lambda p=eval_pct: self.sim_progress.config(value=p))
-                    self.app.after(0, lambda s=eval_msg: self.sim_status_var.set(s))
-                    if detail:
-                        self.app.after(0, lambda s=detail: self.eval_detail_var.set(s))
-
-                def _format_delta_line(new_p: float, old_p: float) -> str:
-                    delta = (new_p - old_p) * 100.0
-                    delta_txt = f"{delta:+.4f}".replace(".", ",")
-                    return f"Δ {delta_txt}%"
-
-                def _format_move_line(
-                    move: Optional[Tuple[str, int]],
-                    display_override: Optional[str] = None,
-                ) -> str:
-                    if display_override:
-                        return display_override
-                    if move is None:
-                        return "swap"
-                    card, delta = move
-                    sign = f"{int(delta):+d}"
-                    if card == "__deckcount__":
-                        return f"{sign} deckcount"
-                    return f"{sign} called by {card}"
-
-                def _detail_lines(
-                    move: Optional[Tuple[str, int]],
-                    new_p: float,
-                    old_p: float,
-                    display_override: Optional[str] = None,
-                ) -> str:
-                    line1 = _format_move_line(move, display_override=display_override)
-                    line2 = _format_delta_line(new_p, old_p)
-                    return f"{line1}\n{line2}"
-
-                def score(counts: Dict[str, int], deckcount: int) -> Tuple[float, float]:
-                    key = (tuple(sorted(counts.items())), int(deckcount))
-                    if key in cache:
-                        return cache[key]
-                    p = self._eval_prob(counts, deckcount, num, goingfirst, dup_penalty_weight, executor=executor)
-                    tag_score = self._tag_priority_score(counts, deckcount)
-                    cache[key] = (p, tag_score)
-                    return cache[key]
-
-                def cmp_score(p: float, tag_score: float, ref_p: float, ref_tag: float) -> int:
-                    eps = 1e-4
-                    if p > ref_p + eps:
-                        return 1
-                    if p < ref_p - eps:
-                        return -1
-                    if tag_score > ref_tag:
-                        return 1
-                    if tag_score < ref_tag:
-                        return -1
-                    return 0
-
-                def better(p: float, tag_score: float, ref_p: float, ref_tag: float) -> bool:
-                    return cmp_score(p, tag_score, ref_p, ref_tag) > 0
-
-                def better_or_equal(p: float, tag_score: float, ref_p: float, ref_tag: float) -> bool:
-                    return cmp_score(p, tag_score, ref_p, ref_tag) >= 0
-
-                explore_budget = max(10, max_steps // 5)
-                start_step = 0
-                elapsed_offset = 0.0
-
-                def _normalize_counts(src: Dict[str, Any]) -> Dict[str, int]:
-                    return {c: int(src.get(c, 0)) for c in constraints.keys()}
-
-                if resume_state_local:
-                    start_step = int(resume_state_local.get("step_idx", 0))
-                    current_counts = _normalize_counts(resume_state_local.get("current_counts", base_counts) or {})
-                    current_deckcount = int(resume_state_local.get("current_deckcount", base_deckcount))
-                    best_counts = _normalize_counts(resume_state_local.get("best_counts", current_counts) or {})
-                    best_deckcount = int(resume_state_local.get("best_deckcount", current_deckcount))
-                    if "current_prob" in resume_state_local:
-                        current_prob = float(resume_state_local.get("current_prob", 0.0))
-                        current_tag = float(resume_state_local.get("current_tag", 0.0))
-                    else:
-                        current_prob, current_tag = score(current_counts, current_deckcount)
-                    if "best_prob" in resume_state_local:
-                        best_prob = float(resume_state_local.get("best_prob", current_prob))
-                        best_tag = float(resume_state_local.get("best_tag", current_tag))
-                    else:
-                        best_prob, best_tag = current_prob, current_tag
-                    last_move_data = resume_state_local.get("last_move")
-                    last_move = tuple(last_move_data) if last_move_data else None
-                    explore_steps_left = int(resume_state_local.get("explore_steps_left", explore_budget))
-                    elapsed_offset = float(resume_state_local.get("elapsed_sec", 0.0))
-                    cache[(tuple(sorted(current_counts.items())), int(current_deckcount))] = (current_prob, current_tag)
-                    cache[(tuple(sorted(best_counts.items())), int(best_deckcount))] = (best_prob, best_tag)
-                else:
-                    current_counts = dict(base_counts)
-                    current_deckcount = int(base_deckcount)
-                    current_prob, current_tag = score(current_counts, current_deckcount)
-                    best_counts = dict(current_counts)
-                    best_deckcount = int(current_deckcount)
-                    best_prob = current_prob
-                    best_tag = current_tag
-                    last_move = None
-                    explore_steps_left = explore_budget
-
-                if start_step < 0:
-                    start_step = 0
-                if start_step > max_steps:
-                    start_step = max_steps
-
-                start_ts = time.monotonic() - max(0.0, elapsed_offset)
-
-                step_durations: List[float] = []
-                if resume_state_local:
-                    step_durations = [
-                        float(v) for v in (resume_state_local.get("step_durations", []) or []) if float(v) >= 0.0
-                    ]
-
-                def _median(values: List[float]) -> Optional[float]:
-                    if not values:
-                        return None
-                    vs = sorted(values)
-                    n = len(vs)
-                    mid = n // 2
-                    if n % 2 == 1:
-                        return vs[mid]
-                    return (vs[mid - 1] + vs[mid]) / 2.0
-
-                def _format_eta(seconds: float) -> str:
-                    seconds = max(0.0, float(seconds))
-                    total = int(round(seconds))
-                    hrs = total // 3600
-                    mins = (total % 3600) // 60
-                    secs = total % 60
-                    if hrs > 0:
-                        return f"{hrs:d}:{mins:02d}:{secs:02d} h"
-                    return f"{mins:d}:{secs:02d} h"
-
-                def update_eta(step_idx: int) -> None:
-                    steps_left = max(0, max_steps - (step_idx + 1))
-                    med = _median(step_durations)
-                    if med is None or steps_left <= 0:
-                        eta_text = "—" if steps_left <= 0 else "Estimating…"
-                    else:
-                        eta_text = _format_eta(med * steps_left)
-                    self.app.after(0, lambda s=eta_text: self.eta_var.set(s))
-
-                stop_reason: Optional[str] = None
-
-                def check_stop() -> bool:
-                    nonlocal stop_reason
-                    if self._opt_abort_requested.is_set():
-                        stop_reason = "abort"
-                        return True
-                    if self._opt_pause_requested.is_set():
-                        stop_reason = "pause"
-                        return True
-                    return False
-
-                def apply_move(
-                    counts: Dict[str, int],
-                    deckcount: int,
-                    card: str,
-                    delta: int,
-                ) -> Optional[Tuple[Dict[str, int], int]]:
-                    if card == "__deckcount__":
-                        new_deckcount = deckcount + delta
-                        total = sum(counts.values())
-                        if new_deckcount < deck_min or new_deckcount > deck_max:
-                            return None
-                        if new_deckcount < total:
-                            return None
-                        return dict(counts), new_deckcount
-
-                    qty = counts.get(card, 0)
-                    min_v, max_v = constraints[card]
-                    new_qty = qty + delta
-                    if new_qty < min_v or new_qty > max_v:
-                        return None
-                    cand = dict(counts)
-                    cand[card] = new_qty
-                    total = sum(counts.values()) + delta
-                    if delta < 0 and total < deck_min:
-                        return None
-                    if total > deck_max:
-                        return None
-                    new_deckcount = int(deckcount)
-                    if total > new_deckcount:
-                        if total > deck_max:
-                            return None
-                        new_deckcount = total
-                    return cand, new_deckcount
-
-                def build_state(step_idx: int) -> Dict[str, Any]:
-                    return {
-                        "version": 1,
-                        "variant_id": str(variant.id),
-                        "variant_name": str(variant.name),
-                        "settings": dict(settings_state),
-                        "constraints": {c: [int(v[0]), int(v[1])] for c, v in constraints.items()},
-                        "locked_cards": sorted(list(locked_cards)),
-                        "base_counts": {c: int(q) for c, q in base_counts.items()},
-                        "base_deckcount": int(base_deckcount),
-                        "current_counts": {c: int(q) for c, q in current_counts.items()},
-                        "current_deckcount": int(current_deckcount),
-                        "current_prob": float(current_prob),
-                        "current_tag": float(current_tag),
-                        "best_counts": {c: int(q) for c, q in best_counts.items()},
-                        "best_deckcount": int(best_deckcount),
-                        "best_prob": float(best_prob),
-                        "best_tag": float(best_tag),
-                        "last_move": list(last_move) if last_move else None,
-                        "step_idx": int(step_idx),
-                        "explore_steps_left": int(explore_steps_left),
-                        "elapsed_sec": float(max(0.0, time.monotonic() - start_ts)),
-                        "step_durations": [float(v) for v in step_durations[-200:]],
-                    }
-
-                for step in range(start_step, max_steps):
-                    if check_stop():
-                        break
-                    step_start = time.monotonic()
-                    improved = False
-                    eval_done = 0
-                    eval_total = 0
-                    update_step_ui(step, eval_done, eval_total, "")
-
-                    # Momentum: try same move again if it worked before
-                    if last_move is not None:
-                        if check_stop():
-                            break
-                        card, delta = last_move
-                        cand = apply_move(current_counts, current_deckcount, card, delta)
-                        if cand is not None:
-                            cand_counts, cand_deckcount = cand
-                            prev_prob = current_prob
-                            p, tscore = score(cand_counts, cand_deckcount)
-                            if better_or_equal(p, tscore, current_prob, current_tag):
-                                current_counts = cand_counts
-                                current_deckcount = cand_deckcount
-                                current_prob = p
-                                current_tag = tscore
-                                improved = True
-                                if better(current_prob, current_tag, best_prob, best_tag):
-                                    best_counts = dict(current_counts)
-                                    best_deckcount = int(current_deckcount)
-                                    best_prob = current_prob
-                                    best_tag = current_tag
-                                update_step_ui(
-                                    step,
-                                    eval_done,
-                                    eval_total,
-                                    _detail_lines(last_move, current_prob, prev_prob),
-                                )
-                            else:
-                                last_move = None
-                        else:
-                            last_move = None
-
-                    best_cand: Optional[Dict[str, int]] = None
-                    best_cand_deckcount: Optional[int] = None
-                    best_cand_prob: Optional[float] = None
-                    best_cand_tag: float = 0.0
-                    best_move: Optional[Tuple[str, int]] = None
-                    best_move_display: Optional[str] = None
-
-                    def consider_candidate(
-                        cand: Optional[Tuple[Dict[str, int], int]],
-                        move: Optional[Tuple[str, int]],
-                        display_override: Optional[str] = None,
-                    ) -> None:
-                        nonlocal best_cand, best_cand_deckcount, best_cand_prob, best_cand_tag, best_move
-                        nonlocal best_move_display, eval_done
-                        if check_stop():
-                            return
-                        if cand is None:
-                            return
-                        eval_done += 1
-                        update_step_ui(step, eval_done, eval_total)
-                        cand_counts, cand_deckcount = cand
-                        p, tscore = score(cand_counts, cand_deckcount)
-                        update_step_ui(step, eval_done, eval_total, _detail_lines(move, p, current_prob, display_override))
-                        if best_cand_prob is None or better(p, tscore, best_cand_prob, best_cand_tag):
-                            best_cand_prob = p
-                            best_cand_tag = tscore
-                            best_cand = cand_counts
-                            best_cand_deckcount = cand_deckcount
-                            best_move = move
-                            best_move_display = display_override
-
-                    if not improved:
-                        total = sum(current_counts.values())
-                        single_moves: List[Tuple[str, int]] = []
-                        if total < deck_max:
-                            for card, (_min_v, max_v) in constraints.items():
-                                if current_counts.get(card, 0) < max_v:
-                                    single_moves.append((card, +1))
-                        for card, (min_v, _max_v) in constraints.items():
-                            if current_counts.get(card, 0) > min_v:
-                                single_moves.append((card, -1))
-
-                        # Deckcount (blanks) adjustments
-                        if current_deckcount < deck_max:
-                            single_moves.append(("__deckcount__", +1))
-                        min_deckcount = max(deck_min, total)
-                        if current_deckcount > min_deckcount:
-                            single_moves.append(("__deckcount__", -1))
-
-                        inc_cards = [c for c, (_min_v, max_v) in constraints.items() if current_counts.get(c, 0) < max_v]
-                        dec_cards = [c for c, (min_v, _max_v) in constraints.items() if current_counts.get(c, 0) > min_v]
-
-                        if not deep_search:
-                            inc_cards = sorted(
-                                inc_cards, key=lambda c: (constraints[c][1] - current_counts.get(c, 0)), reverse=True
-                            )[:6]
-                            dec_cards = sorted(
-                                dec_cards, key=lambda c: (current_counts.get(c, 0) - constraints[c][0]), reverse=True
-                            )[:6]
-                        swap_pairs = [(inc, dec) for inc in inc_cards for dec in dec_cards if inc != dec]
-
-                        eval_total = len(single_moves) + len(swap_pairs)
-                        update_step_ui(step, eval_done, eval_total)
-
-                        for card, delta in single_moves:
-                            if check_stop():
-                                break
-                            consider_candidate(apply_move(current_counts, current_deckcount, card, delta), (card, delta))
-
-                        for inc, dec in swap_pairs:
-                            if check_stop():
-                                break
-                            cand = dict(current_counts)
-                            cand[inc] = cand.get(inc, 0) + 1
-                            cand[dec] = cand.get(dec, 0) - 1
-                            if sum(cand.values()) <= current_deckcount:
-                                consider_candidate(
-                                    (cand, current_deckcount),
-                                    None,
-                                    display_override=f"+1 {inc} / -1 {dec}",
-                                )
-
-                    if not improved:
-                        if best_cand is None or best_cand_prob is None or best_cand_deckcount is None:
-                            break
-                        if better_or_equal(best_cand_prob, best_cand_tag, current_prob, current_tag):
-                            prev_prob = current_prob
-                            current_counts = best_cand
-                            current_deckcount = best_cand_deckcount
-                            current_prob = best_cand_prob
-                            current_tag = best_cand_tag
-                            last_move = best_move
-                            improved = True
-                            explore_steps_left = explore_budget
-                            if better(current_prob, current_tag, best_prob, best_tag):
-                                best_counts = dict(current_counts)
-                                best_deckcount = int(current_deckcount)
-                                best_prob = current_prob
-                                best_tag = current_tag
-                            update_step_ui(
-                                step,
-                                eval_done,
-                                eval_total,
-                                _detail_lines(best_move, current_prob, prev_prob, best_move_display),
-                            )
-                        else:
-                            # Allow limited exploratory steps (sideways or slight dip)
-                            if explore_steps_left > 0:
-                                prev_prob = current_prob
-                                current_counts = best_cand
-                                current_deckcount = best_cand_deckcount
-                                current_prob = best_cand_prob
-                                current_tag = best_cand_tag
-                                last_move = best_move
-                                explore_steps_left -= 1
-                                update_step_ui(
-                                    step,
-                                    eval_done,
-                                    eval_total,
-                                    _detail_lines(best_move, current_prob, prev_prob, best_move_display),
-                                )
-                            else:
-                                current_counts = dict(best_counts)
-                                current_deckcount = int(best_deckcount)
-                                current_prob = best_prob
-                                current_tag = best_tag
-                                last_move = None
-                                explore_steps_left = explore_budget
-                                update_step_ui(step, eval_done, eval_total, "")
-
-                    if stop_reason:
-                        break
-
-                    step_elapsed = max(0.0, time.monotonic() - step_start)
-                    step_durations.append(step_elapsed)
-                    if len(step_durations) > 200:
-                        step_durations = step_durations[-200:]
-                    update_eta(step)
-                    update_step_ui(step + 1, 0, 0, "")
-
-                if stop_reason == "pause":
-                    self._set_saved_opt_state(build_state(step), variant_id=str(variant.id))
-                    saved = self.app.save_project_silent(set_status=False, show_errors=False)
-                    if saved:
-                        self.app.after(0, lambda: self.status_var.set("Paused. Progress saved."))
-                    else:
-                        self.app.after(0, lambda: self.status_var.set("Paused. Save project to persist."))
-                    self.app.after(0, self._update_opt_buttons)
-                    self._opt_pause_requested.clear()
-                    return
-                if stop_reason == "abort":
-                    self._set_saved_opt_state(None, variant_id=str(variant.id))
-                    self.app.after(0, lambda: self.status_var.set("Aborted."))
-                    self.app.after(0, self._update_opt_buttons)
-                    self._opt_abort_requested.clear()
-                    return
-
-                self._set_saved_opt_state(None, variant_id=str(variant.id))
-                self.app.after(
-                    0,
-                    lambda: self._show_result(
-                        best_counts,
-                        base_counts,
-                        best_prob,
-                        score(base_counts, base_deckcount)[0],
-                        locked_cards,
-                        best_deckcount,
-                        base_deckcount,
-                    ),
-                )
-                self.app.after(0, self._update_opt_buttons)
-            except Exception as e:
-                self._set_saved_opt_state(None, variant_id=str(variant.id))
-                self.app.after(0, lambda: messagebox.showerror("Optimization error", str(e)))
-                self.app.after(0, lambda: self.status_var.set("Error."))
-                self.app.after(0, lambda: self.step_progress.config(value=0))
-                self.app.after(0, lambda: self.sim_progress.config(value=0))
-                self.app.after(0, self._update_opt_buttons)
-            finally:
-                if executor is not None:
-                    executor.shutdown(wait=True)
-                self._opt_thread = None
-                self._opt_pause_requested.clear()
-                self._opt_abort_requested.clear()
-
-        self._opt_thread = threading.Thread(target=worker, daemon=True)
-        self._opt_thread.start()
-        self._update_opt_buttons()
-
-    def _update_sim_progress(self, pct: int, done: int, total: int) -> None:
-        self.sim_progress["value"] = pct
-        if total:
-            self.sim_status_var.set(f"Evaluating… {done:,}/{total:,} ({pct}%)")
+        if mode == "evolution":
+            runner = EvolutionRunner(
+                variant_id=variant.id,
+                settings=settings,
+                constraints=constraints,
+                locked_cards=locked_cards,
+                base_counts=base_counts,
+                base_deckcount=base_deckcount,
+                bench_limits=bench_limits,
+                sim_context=sim_context,
+                ideal_hands=ideal_list,
+                handtrap_effects=self.app.handtrap_effects,
+                card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                all_cards=self.app.get_all_deck_cards(),
+                state=None,
+            )
         else:
-            self.sim_status_var.set("Evaluating…")
+            runner = OptimizerRunner(
+                variant_id=variant.id,
+                settings=settings,
+                constraints=constraints,
+                locked_cards=locked_cards,
+                base_counts=base_counts,
+                base_deckcount=base_deckcount,
+                bench_limits=bench_limits,
+                sim_context=sim_context,
+                ideal_hands=ideal_list,
+                handtrap_effects=self.app.handtrap_effects,
+                card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                all_cards=self.app.get_all_deck_cards(),
+                state=None,
+            )
 
-    def _show_result(
-        self,
-        result: Dict[str, int],
-        base: Dict[str, int],
-        best_prob: float,
-        base_prob: float,
-        locked_cards: set[str],
-        result_deckcount: int,
-        base_deckcount: int,
-    ) -> None:
-        self.step_progress["value"] = 100
-        self.sim_progress["value"] = 100
-        self.sim_status_var.set("Evaluation done.")
-        self.status_var.set("Done.")
+        self._pause_requested = False
+        self._abort_requested = False
+        self._active_state = runner.state
 
-        self._last_result = dict(result)
-        self._last_base = dict(base)
-        self._last_prob = best_prob
-        self._last_base_prob = base_prob
-        self._last_locked = set(locked_cards)
-        self._last_deckcount = int(result_deckcount)
-        self._last_base_deckcount = int(base_deckcount)
+        self._set_running_state(True)
+        self.status_label.setText("Evolution…" if mode == "evolution" else "Optimizing…")
+        self.step_progress.setValue(0)
+        self.eval_progress.setValue(0)
+        self.eval_detail.setText("")
 
-        if self.result_tree:
-            for r in self.result_tree.get_children():
-                self.result_tree.delete(r)
+        self.thread = QtCore.QThread()
+        self.worker = OptimizationWorker(runner, self._should_pause, self._should_abort)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_finished)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
 
-            for card in safe_sorted_cards(list(result.keys())):
-                qty = int(result.get(card, 0))
-                delta = qty - int(base.get(card, 0))
-                lock_flag = "🔒" if card in locked_cards else ""
-                tag = "locked" if card in locked_cards else ("pos" if delta > 0 else "neg" if delta < 0 else "")
-                tags = (tag,) if tag else ()
-                self.result_tree.insert("", "end", values=(card, qty, f"{delta:+d}", lock_flag), tags=tags)
+    def pause(self) -> None:
+        self._pause_requested = True
+        self.status_label.setText("Pausing…")
+
+    def resume(self) -> None:
+        if not self._active_state:
+            return
+        self._pause_requested = False
+        self._abort_requested = False
+
+        state = self._active_state
+        bench_limits = getattr(state, "bench_limits", {}) or {}
+        if isinstance(state, EvolutionState):
+            self._active_mode = "evolution"
+            runner = EvolutionRunner(
+                variant_id=state.variant_id,
+                settings=state.settings,
+                constraints=state.constraints,
+                locked_cards=state.locked_cards,
+                base_counts=state.base_counts,
+                base_deckcount=state.base_deckcount,
+                bench_limits=bench_limits,
+                sim_context=build_simulation_context(
+                    ideal_hands=[h.to_dict() for h in self.app.ideal_hands.values()],
+                    handtrap_effects=self.app.handtrap_effects,
+                    trap_defs=self.app.handtrap_defs,
+                    card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                ),
+                ideal_hands=[h.to_dict() for h in self.app.ideal_hands.values()],
+                handtrap_effects=self.app.handtrap_effects,
+                card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                all_cards=self.app.get_all_deck_cards(),
+                state=state,
+            )
+        else:
+            self._active_mode = "local"
+            runner = OptimizerRunner(
+                variant_id=state.variant_id,
+                settings=state.settings,
+                constraints=state.constraints,
+                locked_cards=state.locked_cards,
+                base_counts=state.base_counts,
+                base_deckcount=state.base_deckcount,
+                bench_limits=bench_limits,
+                sim_context=build_simulation_context(
+                    ideal_hands=[h.to_dict() for h in self.app.ideal_hands.values()],
+                    handtrap_effects=self.app.handtrap_effects,
+                    trap_defs=self.app.handtrap_defs,
+                    card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                ),
+                ideal_hands=[h.to_dict() for h in self.app.ideal_hands.values()],
+                handtrap_effects=self.app.handtrap_effects,
+                card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
+                all_cards=self.app.get_all_deck_cards(),
+                state=state,
+            )
+
+        self._set_running_state(True)
+        self.status_label.setText("Evolution…" if self._active_mode == "evolution" else "Optimizing…")
+
+        self.thread = QtCore.QThread()
+        self.worker = OptimizationWorker(runner, self._should_pause, self._should_abort)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_finished)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def abort(self) -> None:
+        self._abort_requested = True
+        self.status_label.setText("Aborting…")
+
+    def _should_pause(self) -> bool:
+        return self._pause_requested
+
+    def _should_abort(self) -> bool:
+        return self._abort_requested
+
+    def _on_progress(self, progress: OptimizationProgress) -> None:
+        self.status_label.setText(progress.status_text)
+        frac = (progress.eval_done / progress.eval_total) if progress.eval_total > 0 else 0.0
+        self.step_progress.setValue(int(((progress.step_index + frac) / progress.max_steps) * 100))
+        if progress.eval_total > 0:
+            pct = int(progress.eval_done * 100 / progress.eval_total)
+            self.eval_progress.setValue(pct)
+            self.eval_status_label.setText(progress.eval_text)
+        else:
+            self.eval_progress.setValue(0)
+            self.eval_status_label.setText("")
+        if progress.detail_text:
+            self.eval_detail.setText(progress.detail_text)
+
+    def _on_finished(self, result: Any) -> None:
+        status = result.status
+        state = result.state
+        self._active_state = state
+
+        if status == "paused":
+            self._set_running_state(False, paused=True)
+            self._persist_state(state)
+            self.status_label.setText("Paused.")
+            return
+        if status == "aborted":
+            self._set_running_state(False)
+            self._clear_state(state.variant_id)
+            self.status_label.setText("Aborted.")
+            self.step_progress.setValue(0)
+            self.eval_progress.setValue(0)
+            return
+
+        self._set_running_state(False)
+        self._clear_state(state.variant_id)
+        self._show_result(state)
+
+    def _set_running_state(self, running: bool, paused: bool = False) -> None:
+        self._set_controls_enabled(not running and not paused)
+        if running:
+            self.btn_optimize.hide()
+            self.btn_resume.hide()
+            self.btn_pause.show()
+            self.btn_abort.show()
+        else:
+            self.btn_pause.hide()
+            if paused:
+                self.btn_resume.show()
+                self.btn_abort.show()
+            else:
+                self.btn_resume.hide()
+                self.btn_abort.hide()
+                self.btn_optimize.show()
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.variant_combo,
+            self.min_spin,
+            self.max_spin,
+            self.eval_spin,
+            self.max_steps_spin,
+            self.mode_combo,
+            self.deep_check,
+            self.goingfirst_check,
+            self.dup_check,
+            self.dup_slider,
+            self.tag_priority_weight_slider,
+            self.prob_threshold_spin,
+        ):
+            if widget is not None:
+                widget.setEnabled(enabled)
+        for widget in (
+            self.evo_pop_spin,
+            self.evo_elite_spin,
+            self.evo_mut_spin,
+            self.evo_cross_spin,
+        ):
+            if widget is not None:
+                widget.setEnabled(enabled)
+        for combo in self.priority_order_combos:
+            combo.setEnabled(enabled)
+        for row in self.card_rows.values():
+            if not row:
+                continue
+            row["min_spin"].setEnabled(enabled and not row.get("lock"))
+            row["max_spin"].setEnabled(enabled and not row.get("lock"))
+            row["lock_btn"].setEnabled(enabled)
+        for row in self.tag_rows.values():
+            slider = row.get("slider")
+            if slider is not None:
+                slider.setEnabled(enabled)
+
+    # -------------------------
+    # Persistence
+    # -------------------------
+
+    def _persist_state(self, state: OptimizationState | EvolutionState) -> None:
+        store = self.app.optimize_state.setdefault("by_variant", {})
+        mode = "evolution" if isinstance(state, EvolutionState) else "local"
+        store[state.variant_id] = {"mode": mode, "state": state.to_dict()}
+        self.app.save_optimize_state()
+
+    def _clear_state(self, variant_id: str) -> None:
+        store = self.app.optimize_state.get("by_variant", {})
+        if variant_id in store:
+            store.pop(variant_id, None)
+            self.app.save_optimize_state()
+
+    def _restore_paused_state(self, variant_id: str) -> None:
+        store = self.app.optimize_state.get("by_variant", {})
+        raw = store.get(variant_id)
+        if not raw:
+            self._active_state = None
+            self.btn_resume.hide()
+            return
+        mode = "local"
+        state_data = raw
+        if isinstance(raw, dict) and "state" in raw:
+            mode_val = str(raw.get("mode", "local")).lower()
+            if mode_val.startswith("evo"):
+                mode = "evolution"
+            state_data = raw.get("state") or {}
+        if mode == "evolution":
+            state = EvolutionState.from_dict(state_data)
+        else:
+            state = OptimizationState.from_dict(state_data)
+        if not state:
+            return
+
+        # Validate against current decklist
+        variant = self.app.deck_variants.get(variant_id)
+        if not variant:
+            return
+        if state.base_counts != {c: int(variant.decklist.get(c, 0)) for c in state.base_counts}:
+            # deck changed; discard stale state
+            store.pop(variant_id, None)
+            self.app.save_optimize_state()
+            return
+
+        self._active_state = state
+        self._active_mode = mode
+        # restore settings to match paused run
+        if self.mode_combo:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentText("Evolution" if mode == "evolution" else "Local search")
+            self.mode_combo.blockSignals(False)
+        self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
+        self.min_spin.setValue(int(state.settings.deck_min))
+        self.max_spin.setValue(int(state.settings.deck_max))
+        self.eval_spin.setValue(int(state.settings.sims_per_step))
+        self.max_steps_spin.setValue(int(state.settings.max_steps))
+        self.goingfirst_check.setChecked(bool(state.settings.goingfirst))
+        self.deep_check.setChecked(bool(state.settings.deep_search))
+        self.dup_check.setChecked(bool(state.settings.dup_penalty_weight > 0))
+        self.dup_slider.setValue(int(round(state.settings.dup_penalty_weight * 100)))
+        self.tag_priority_weight_slider.setValue(int(round(state.settings.tag_weight * 100)))
+        if self.prob_threshold_spin:
+            self.prob_threshold_spin.setValue(int(round(state.settings.prob_threshold * 100)))
+        if self.priority_order_combos:
+            self._set_priority_order_ui(list(state.settings.priority_order or []))
+        if self.evo_pop_spin:
+            self.evo_pop_spin.setValue(int(state.settings.evo_population))
+        if self.evo_elite_spin:
+            self.evo_elite_spin.setValue(int(state.settings.evo_elite))
+        if self.evo_mut_spin:
+            self.evo_mut_spin.setValue(int(round(state.settings.evo_mutation_rate * 100)))
+        if self.evo_cross_spin:
+            self.evo_cross_spin.setValue(int(round(state.settings.evo_crossover_rate * 100)))
+        max_val = self._tag_priority_max()
+        self._tag_priority_values = {
+            tag: min(int(round(weight)), max_val)
+            for tag, weight in (state.settings.tag_priorities or {}).items()
+        }
+        for tag, weight in (state.settings.tag_priorities or {}).items():
+            row = self.tag_rows.get(tag)
+            if row:
+                slider = row["slider"]
+                slider.setRange(0, max_val)
+                slider.setValue(min(int(round(weight)), max_val))
+        if state.last_detail:
+            self.eval_detail.setText(state.last_detail)
+
+        # restore constraints
+        for card, (mn, mx) in state.constraints.items():
+            row = self.card_rows.get(card)
+            if not row:
+                continue
+            row["min_spin"].setValue(mn)
+            row["max_spin"].setValue(mx)
+            if card in state.locked_cards:
+                row["lock"] = False
+                self._toggle_lock(card)
+
+        total_steps = max(1, int(state.settings.max_steps))
+        if isinstance(state, EvolutionState):
+            step_idx = max(0, min(int(state.generation), total_steps))
+        else:
+            step_idx = max(0, min(int(state.step_index), total_steps))
+        step_pct = int(step_idx * 100 / total_steps)
+        self.step_progress.setValue(step_pct)
+        self.eval_progress.setValue(0)
+        if isinstance(state, EvolutionState):
+            self.status_label.setText(f"Paused at gen {step_idx}/{total_steps}.")
+        else:
+            self.status_label.setText(f"Paused at step {step_idx}/{total_steps}.")
+        self._set_running_state(False, paused=True)
+
+    # -------------------------
+    # Results
+    # -------------------------
+
+    def _show_result(self, state: OptimizationState | EvolutionState) -> None:
+        self.step_progress.setValue(100)
+        self.eval_progress.setValue(100)
+        self.status_label.setText("Done.")
+
+        self._last_result = dict(state.best_counts)
+        self._last_base = dict(state.base_counts)
+        self._last_prob = state.best_prob
+        self._last_base_prob = state.base_prob
+        self._last_locked = set(state.locked_cards)
+        self._last_deckcount = int(state.best_deckcount)
+        self._last_base_deckcount = int(state.base_deckcount)
+
+        if self.result_table:
+            table = self.result_table
+            table_sorting = table.isSortingEnabled()
+            table_block = QtCore.QSignalBlocker(table)
+            table.setUpdatesEnabled(False)
+            table.setSortingEnabled(False)
+            cards = safe_sorted_cards(list(state.best_counts.keys()))
+            table.setRowCount(len(cards))
+            for row, card in enumerate(cards):
+                qty = int(state.best_counts.get(card, 0))
+                delta = qty - int(state.base_counts.get(card, 0))
+                lock_flag = "🔒" if card in state.locked_cards else ""
+                table.setItem(row, 0, QtWidgets.QTableWidgetItem(card))
+                table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(qty)))
+                delta_item = QtWidgets.QTableWidgetItem(f"{delta:+d}")
+                if delta > 0:
+                    delta_item.setForeground(QtGui.QColor("#15803D"))
+                elif delta < 0:
+                    delta_item.setForeground(QtGui.QColor("#B91C1C"))
+                table.setItem(row, 2, delta_item)
+                table.setItem(row, 3, QtWidgets.QTableWidgetItem(lock_flag))
+            table.setSortingEnabled(table_sorting)
+            table.setUpdatesEnabled(True)
+            del table_block
 
         if self.result_summary:
-            delta = best_prob - base_prob
-            base_count = int(base_deckcount)
-            result_count = int(result_deckcount)
-            base_cards = deck_size_positive(base)
-            result_cards = deck_size_positive(result)
+            delta = state.best_prob - state.base_prob
+            base_count = int(state.base_deckcount)
+            result_count = int(state.best_deckcount)
+            base_cards = deck_size_positive(state.base_counts)
+            result_cards = deck_size_positive(state.best_counts)
             base_blank = max(0, base_count - base_cards)
             result_blank = max(0, result_count - result_cards)
             base_detail = f"Deck {base_count}" + (f" (+{base_blank} blanks)" if base_blank else "")
             result_detail = f"Deck {result_count}" + (f" (+{result_blank} blanks)" if result_blank else "")
             penalty_detail = ""
-            if self._last_dup_penalty_enabled and self._last_dup_penalty_weight > 0:
-                penalty_detail = f"  |  Penalty {self._last_dup_penalty_weight * 100:.0f}%"
-            self.result_summary.config(
-                text=(
-                    f"Base: {base_prob:.4%} ({base_detail})  |  "
-                    f"Optimized: {best_prob:.4%} ({result_detail})  |  Δ {delta:+.4%}"
-                    f"{penalty_detail}"
-                )
+            if self.dup_check.isChecked() and self.dup_slider.value() > 0:
+                penalty_detail = f"  |  Penalty {self.dup_slider.value():.0f}%"
+            self.result_summary.setText(
+                f"Base: {state.base_prob:.4%} ({base_detail})  |  "
+                f"Optimized: {state.best_prob:.4%} ({result_detail})  |  Δ {delta:+.4%}{penalty_detail}"
             )
 
     def _create_variant_from_result(self) -> None:
         if not self._last_result:
-            messagebox.showwarning("No result", "Run optimization first.")
+            QtWidgets.QMessageBox.warning(self, "No result", "Run optimization first.")
             return
-        name = self.variant_var.get().strip() or "Variant"
-        new_name = simpledialog.askstring(
+        name = self.variant_combo.currentText().strip() or "Variant"
+        new_name, ok = QtWidgets.QInputDialog.getText(
+            self,
             "Create variant",
             "New variant name:",
-            initialvalue=f"{name} - Optimized",
-            parent=self.app,
+            text=f"{name} - Optimized",
         )
-        if not new_name:
+        if not ok or not new_name:
             return
         self.app.add_deck_variant(name=new_name, cards=self._last_result)
         self.app.refresh_all()
-# endregion
+
+    # -------------------------
+    # UI helpers
+    # -------------------------
+
+    def _update_dup_label(self, value: Optional[int] = None) -> None:
+        if not self.dup_value:
+            return
+        if value is None:
+            value = int(self.dup_slider.value())
+        self.dup_value.setText(f"{value}%")
+
+    def _update_dup_state(self) -> None:
+        enabled = self.dup_check.isChecked()
+        self.dup_slider.setEnabled(enabled)
+        self.dup_value.setEnabled(enabled)

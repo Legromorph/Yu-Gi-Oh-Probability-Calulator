@@ -3,35 +3,32 @@ from __future__ import annotations
 # region Imports
 import os
 import re
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 from typing import Any, Dict, List, Optional
+
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..models import IdealHand, DeckVariant, CardMeta
 from ..constants import CARD_TAGS, HANDTRAP_DEFS
-from ..storage import project_to_dict, project_from_dict, load_project, save_project
+from ..storage import ProjectData, load_project, save_project, save_optimize_state
 from ..utils import safe_sorted_cards
 
 from .tabs.deck import DeckTab
 from .tabs.hands import HandsTab
 from .tabs.traps import TrapsTab
-from .tabs.sim import SimTab
 from .tabs.optimize import OptimizeTab
+from .tabs.sim import SimTab
 # endregion
 
 
-class DeckToolMainWindow(tk.Tk):
-    """
-    App shell + shared state + project I/O.
-    Tabs are split into modules for maintainability.
-    """
+class DeckToolMainWindow(QtWidgets.QMainWindow):
+    """Main application window and shared state."""
 
     def __init__(self) -> None:
         super().__init__()
 
-        self.title("Deck Tool")
-        self.geometry("1240x800")
-        self.minsize(1100, 700)
+        self.setWindowTitle("Deck Tool")
+        self.resize(1280, 820)
+        self.setMinimumSize(1120, 720)
 
         # Shared state
         self.deck_variants: Dict[str, DeckVariant] = {}
@@ -39,7 +36,6 @@ class DeckToolMainWindow(tk.Tk):
         self.active_deck_id: str = ""
         self._deck_id_counter: int = 1
 
-        self._ensure_default_deck()
         self.ideal_hands: Dict[str, IdealHand] = {}
         self.handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.handtrap_defs: Dict[str, str] = dict(HANDTRAP_DEFS)
@@ -48,85 +44,94 @@ class DeckToolMainWindow(tk.Tk):
         self.current_file: Optional[str] = None
         self._id_counter: int = 1
 
-        # Selection source-of-truth (BUGFIX): editor hand id is the truth
-        self.hand_id_var = tk.StringVar(value="")   # set by Hands tab editor
-        self.hand_name_var = tk.StringVar(value="")
-        self.hand_score_var = tk.IntVar(value=0)
-        self.hand_trap_only_var = tk.BooleanVar(value=False)
+        self.current_hand_id: str = ""
 
-        # UI layout
+        # placeholders to avoid early signal access during tab construction
+        self.deck_tab = None
+        self.hands_tab = None
+        self.traps_tab = None
+        self.optimize_tab = None
+        self.sim_tab = None
+
+        self._ensure_default_deck()
+
+        # UI
         self._build_menu()
         self._build_shell()
 
-        # Tabs
         self.deck_tab = DeckTab(self)
         self.hands_tab = HandsTab(self)
         self.traps_tab = TrapsTab(self)
         self.optimize_tab = OptimizeTab(self)
         self.sim_tab = SimTab(self)
 
-        self.deck_tab.build(self.tab_deck)
-        self.hands_tab.build(self.tab_hands)
-        self.traps_tab.build(self.tab_traps)
-        self.optimize_tab.build(self.tab_optimize)
-        self.sim_tab.build(self.tab_sim)
+        self.tabs.addTab(self.deck_tab, "Deck")
+        self.tabs.addTab(self.hands_tab, "Ideal Hands")
+        self.tabs.addTab(self.traps_tab, "Handtraps")
+        self.tabs.addTab(self.optimize_tab, "Optimize")
+        self.tabs.addTab(self.sim_tab, "Simulation")
 
-        # Initial render
         self.refresh_all()
         self._set_status("Ready.")
+        self._fade_in()
 
     # -------------------------
     # Shell / layout
     # -------------------------
 
     def _build_shell(self) -> None:
-        """Build the static shell (header, status, notebook)."""
-        header = ttk.Frame(self, padding=(18, 16))
-        header.pack(fill="x")
+        """Build the static shell (header, tabs, status)."""
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
 
-        ttk.Label(header, text="Deck Tool", style="Header.TLabel").pack(side="left")
-        ttk.Label(
-            header,
-            text="Clean workflow • Ideal hands • Handtraps • Simulation",
-            style="Subheader.TLabel",
-        ).pack(side="left", padx=(14, 0))
+        header = QtWidgets.QFrame()
+        header.setProperty("role", "header")
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 14, 18, 14)
+        header_layout.setSpacing(12)
 
-        self.status_var = tk.StringVar(value="Ready.")
-        status = ttk.Frame(self, padding=(18, 10))
-        status.pack(side="bottom", fill="x")
-        ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w")
+        title = QtWidgets.QLabel("Deck Tool")
+        title.setProperty("role", "title")
+        subtitle = QtWidgets.QLabel("Clean workflow • Ideal hands • Handtraps • Simulation")
+        subtitle.setProperty("role", "subtitle")
 
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch(1)
 
-        self.tab_deck = ttk.Frame(self.notebook)
-        self.tab_hands = ttk.Frame(self.notebook)
-        self.tab_traps = ttk.Frame(self.notebook)
-        self.tab_optimize = ttk.Frame(self.notebook)
-        self.tab_sim = ttk.Frame(self.notebook)
+        root.addWidget(header)
 
-        self.notebook.add(self.tab_deck, text="Deck")
-        self.notebook.add(self.tab_hands, text="Ideal Hands")
-        self.notebook.add(self.tab_traps, text="Handtraps")
-        self.notebook.add(self.tab_optimize, text="Optimize")
-        self.notebook.add(self.tab_sim, text="Simulation")
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        root.addWidget(self.tabs, 1)
+
+        self.status = QtWidgets.QStatusBar()
+        self.setStatusBar(self.status)
 
     def _set_status(self, text: str) -> None:
-        """Update the footer status line."""
-        self.status_var.set(text)
+        self.status.showMessage(text, 5000)
+
+    def _fade_in(self) -> None:
+        self.setWindowOpacity(0.0)
+        anim = QtCore.QPropertyAnimation(self, b"windowOpacity")
+        anim.setDuration(280)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
 
     # -------------------------
     # Deck variants
     # -------------------------
 
     def _ensure_default_deck(self) -> None:
-        """Guarantee at least one variant exists."""
         if self.deck_variant_order:
             return
         self.add_deck_variant(name="Variant 1")
 
     def _sync_deck_id_counter(self) -> None:
-        """Sync internal ID counter based on existing variant IDs."""
         max_id = 0
         for vid in self.deck_variant_order:
             m = re.search(r"\d+", vid)
@@ -135,7 +140,6 @@ class DeckToolMainWindow(tk.Tk):
         self._deck_id_counter = max_id + 1 if max_id > 0 else 1
 
     def add_deck_variant(self, name: Optional[str] = None, cards: Optional[Dict[str, int]] = None) -> DeckVariant:
-        """Create and register a new deck variant."""
         if name is None:
             name = f"Variant {len(self.deck_variant_order) + 1}"
         deck_id = f"D{self._deck_id_counter:02d}"
@@ -148,12 +152,10 @@ class DeckToolMainWindow(tk.Tk):
         return variant
 
     def set_active_deck(self, deck_id: str) -> None:
-        """Mark a variant as the active deck."""
         if deck_id in self.deck_variants:
             self.active_deck_id = deck_id
 
     def get_active_deck(self) -> DeckVariant:
-        """Return the active deck variant (fallback to first)."""
         if self.active_deck_id in self.deck_variants:
             return self.deck_variants[self.active_deck_id]
         if self.deck_variant_order:
@@ -162,15 +164,12 @@ class DeckToolMainWindow(tk.Tk):
         return self.deck_variants[self.active_deck_id]
 
     def get_active_decklist(self) -> Dict[str, int]:
-        """Convenience: active variant's decklist dict."""
         return self.get_active_deck().decklist
 
     def get_deck_variants_in_order(self) -> List[DeckVariant]:
-        """Return variants in their user-defined order."""
         return [self.deck_variants[vid] for vid in self.deck_variant_order]
 
     def get_all_deck_cards(self) -> List[str]:
-        """Union of all cards across variants and benches."""
         cards = set()
         for dv in self.deck_variants.values():
             cards.update(dv.decklist.keys())
@@ -179,7 +178,6 @@ class DeckToolMainWindow(tk.Tk):
         return safe_sorted_cards(list(cards))
 
     def get_all_tags(self) -> List[str]:
-        """All known tags across card metadata + defaults."""
         tags = {k for k, _label in CARD_TAGS}
         for meta in self.card_meta.values():
             for t in (meta.tags or []):
@@ -189,21 +187,18 @@ class DeckToolMainWindow(tk.Tk):
         return safe_sorted_cards(list(tags))
 
     # -------------------------
-    # Selection helpers (BUGFIX)
+    # Selection helpers
     # -------------------------
 
     def get_current_hand(self) -> Optional[IdealHand]:
-        """
-        BUGFIX: Never rely on Listbox selection.
-        If editor has a hand_id -> that's selected.
-        """
-        hid = self.hand_id_var.get().strip()
-        if not hid:
+        if not self.current_hand_id:
             return None
-        return self.ideal_hands.get(hid)
+        return self.ideal_hands.get(self.current_hand_id)
+
+    def set_current_hand(self, hand_id: str) -> None:
+        self.current_hand_id = hand_id
 
     def require_current_hand(self) -> IdealHand:
-        """Raise if no hand is selected, otherwise return it."""
         hand = self.get_current_hand()
         if not hand:
             raise RuntimeError("Please select an ideal hand first.")
@@ -214,7 +209,6 @@ class DeckToolMainWindow(tk.Tk):
     # -------------------------
 
     def refresh_all(self) -> None:
-        """Refresh every tab."""
         self.deck_tab.refresh()
         self.hands_tab.refresh()
         self.traps_tab.refresh()
@@ -222,38 +216,57 @@ class DeckToolMainWindow(tk.Tk):
         self.sim_tab.refresh()
 
     def refresh_hand_dependent_views(self) -> None:
-        """
-        Called after a hand is loaded/changed: update tabs that depend on current hand.
-        """
         self.hands_tab.refresh_hand_editor()
         self.traps_tab.refresh()
         self.sim_tab.refresh()
 
-    # region Menu
+    # -------------------------
+    # Menu
+    # -------------------------
+
     def _build_menu(self) -> None:
-        """Create the application menu and global shortcuts."""
-        menubar = tk.Menu(self)
+        menu = self.menuBar()
+        file_menu = menu.addMenu("&File")
 
-        filemenu = tk.Menu(menubar, tearoff=False)
-        filemenu.add_command(label="New", command=self.new_project, accelerator="Ctrl+N")
-        filemenu.add_command(label="Open…", command=self.open_project, accelerator="Ctrl+O")
-        filemenu.add_command(label="Save", command=self.save_project, accelerator="Ctrl+S")
-        filemenu.add_command(label="Save As…", command=self.save_project_as)
-        filemenu.add_separator()
-        filemenu.add_command(label="Exit", command=self.destroy)
+        new_action = QtGui.QAction("New", self)
+        new_action.setShortcut(QtGui.QKeySequence.New)
+        new_action.triggered.connect(self.new_project)
 
-        menubar.add_cascade(label="File", menu=filemenu)
-        self.config(menu=menubar)
+        open_action = QtGui.QAction("Open…", self)
+        open_action.setShortcut(QtGui.QKeySequence.Open)
+        open_action.triggered.connect(self.open_project)
 
-        self.bind_all("<Control-n>", lambda _e: self.new_project())
-        self.bind_all("<Control-o>", lambda _e: self.open_project())
-        self.bind_all("<Control-s>", lambda _e: self.save_project())
-    # endregion
+        save_action = QtGui.QAction("Save", self)
+        save_action.setShortcut(QtGui.QKeySequence.Save)
+        save_action.triggered.connect(self.save_project)
 
-    # region Project I/O
+        save_as_action = QtGui.QAction("Save As…", self)
+        save_as_action.setShortcut(QtGui.QKeySequence.SaveAs)
+        save_as_action.triggered.connect(self.save_project_as)
+
+        exit_action = QtGui.QAction("Exit", self)
+        exit_action.setShortcut(QtGui.QKeySequence.Quit)
+        exit_action.triggered.connect(self.close)
+
+        file_menu.addAction(new_action)
+        file_menu.addAction(open_action)
+        file_menu.addAction(save_action)
+        file_menu.addAction(save_as_action)
+        file_menu.addSeparator()
+        file_menu.addAction(exit_action)
+
+    # -------------------------
+    # Project I/O
+    # -------------------------
+
     def new_project(self) -> None:
-        """Reset all state and start a fresh project."""
-        if not messagebox.askyesno("Confirm", "Start a new project? Unsaved changes will be lost."):
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm",
+            "Start a new project? Unsaved changes will be lost.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
             return
 
         self.current_file = None
@@ -268,124 +281,112 @@ class DeckToolMainWindow(tk.Tk):
         self.card_meta.clear()
         self.optimize_state.clear()
         self._id_counter = 1
+        self.current_hand_id = ""
 
-        # clear selection
-        self.hand_id_var.set("")
-        self.hand_name_var.set("")
-        self.hand_score_var.set(0)
-        self.hand_trap_only_var.set(False)
-
-        self.title("Deck Tool")
+        self.setWindowTitle("Deck Tool")
         self.refresh_all()
         self._set_status("New project created.")
 
     def open_project(self) -> None:
-        """Open a project JSON and restore its state."""
-        path = filedialog.askopenfilename(
-            title="Open Project",
-            filetypes=[("Deck Tool JSON", "*.json"), ("All files", "*.*")],
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Project",
+            "",
+            "Deck Tool Files (*.deckdb *.json *.db);;All Files (*)",
         )
         if not path:
             return
 
         try:
             data = load_project(path)
-            (
-                deck_variants,
-                active_deck_id,
-                card_meta,
-                ideal_hands,
-                handtrap_effects,
-                handtrap_defs,
-                id_counter,
-                optimize_state,
-            ) = project_from_dict(data)
-
-            self.deck_variants = {dv.id: dv for dv in deck_variants}
-            self.deck_variant_order = [dv.id for dv in deck_variants]
-            self.active_deck_id = active_deck_id if active_deck_id in self.deck_variants else ""
+            self.deck_variants = {dv.id: dv for dv in data.deck_variants}
+            self.deck_variant_order = [dv.id for dv in data.deck_variants]
+            self.active_deck_id = data.active_deck_id if data.active_deck_id in self.deck_variants else ""
             if not self.active_deck_id and self.deck_variant_order:
                 self.active_deck_id = self.deck_variant_order[0]
             if not self.active_deck_id:
                 self._ensure_default_deck()
             self._sync_deck_id_counter()
-            self.ideal_hands = ideal_hands
-            self.handtrap_effects = handtrap_effects
-            self.handtrap_defs = dict(handtrap_defs) if handtrap_defs else dict(HANDTRAP_DEFS)
-            self.card_meta = card_meta
-            self._id_counter = id_counter
-            self.optimize_state = dict(optimize_state or {})
+            self.ideal_hands = data.ideal_hands
+            self.handtrap_effects = data.handtrap_effects
+            self.handtrap_defs = dict(data.handtrap_defs) if data.handtrap_defs else dict(HANDTRAP_DEFS)
+            self.card_meta = data.card_meta
+            self._id_counter = data.id_counter
+            self.optimize_state = dict(data.optimize_state or {})
 
             self.current_file = path
-            self.title(f"Deck Tool - {os.path.basename(path)}")
+            self.setWindowTitle(f"Deck Tool - {os.path.basename(path)}")
 
-            # clear selection (user will select)
-            self.hand_id_var.set("")
-            self.hand_name_var.set("")
-            self.hand_score_var.set(0)
-            self.hand_trap_only_var.set(False)
-
+            self.current_hand_id = ""
             self.refresh_all()
             self._set_status(f"Opened: {path}")
         except Exception as e:
-            messagebox.showerror("Open failed", f"Could not open file:\n{e}")
+            QtWidgets.QMessageBox.critical(self, "Open failed", f"Could not open file:\n{e}")
 
     def save_project(self) -> None:
-        """Save the project to the current file."""
         if self.current_file is None:
             return self.save_project_as()
 
         try:
-            data = project_to_dict(
-                self.get_deck_variants_in_order(),
-                self.active_deck_id,
-                self.card_meta,
-                self.ideal_hands,
-                self.handtrap_effects,
-                self.handtrap_defs,
-                self._id_counter,
-                self.optimize_state,
+            data = ProjectData(
+                deck_variants=self.get_deck_variants_in_order(),
+                active_deck_id=self.active_deck_id,
+                card_meta=self.card_meta,
+                ideal_hands=self.ideal_hands,
+                handtrap_effects=self.handtrap_effects,
+                handtrap_defs=self.handtrap_defs,
+                id_counter=self._id_counter,
+                optimize_state=self.optimize_state,
             )
             save_project(self.current_file, data)
             self._set_status(f"Saved: {self.current_file}")
-            messagebox.showinfo("Saved", f"Project saved:\n{self.current_file}")
         except Exception as e:
-            messagebox.showerror("Save failed", f"Could not save:\n{e}")
+            QtWidgets.QMessageBox.critical(self, "Save failed", f"Could not save:\n{e}")
 
-    def save_project_silent(self, set_status: bool = True, show_errors: bool = True) -> bool:
-        """Save the project without modal dialogs. Returns True if saved."""
+    def save_project_silent(self, set_status: bool = True) -> bool:
         if self.current_file is None:
             return False
         try:
-            data = project_to_dict(
-                self.get_deck_variants_in_order(),
-                self.active_deck_id,
-                self.card_meta,
-                self.ideal_hands,
-                self.handtrap_effects,
-                self.handtrap_defs,
-                self._id_counter,
-                self.optimize_state,
+            data = ProjectData(
+                deck_variants=self.get_deck_variants_in_order(),
+                active_deck_id=self.active_deck_id,
+                card_meta=self.card_meta,
+                ideal_hands=self.ideal_hands,
+                handtrap_effects=self.handtrap_effects,
+                handtrap_defs=self.handtrap_defs,
+                id_counter=self._id_counter,
+                optimize_state=self.optimize_state,
             )
             save_project(self.current_file, data)
             if set_status:
                 self._set_status(f"Saved: {self.current_file}")
             return True
-        except Exception as e:
-            if show_errors:
-                messagebox.showerror("Save failed", f"Could not save:\n{e}")
+        except Exception:
             return False
 
     def save_project_as(self) -> None:
-        """Prompt for a save path and write the project."""
-        path = filedialog.asksaveasfilename(
-            title="Save Project As",
-            defaultextension=".json",
-            filetypes=[("Deck Tool JSON", "*.json"), ("All files", "*.*")],
+        path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Project As",
+            "",
+            "Deck Tool DB (*.deckdb);;Deck Tool JSON (*.json);;All Files (*)",
         )
         if not path:
             return
+        _, ext = os.path.splitext(path)
+        if not ext:
+            if "JSON" in (selected_filter or ""):
+                path = f"{path}.json"
+            else:
+                path = f"{path}.deckdb"
         self.current_file = path
         self.save_project()
-        self.title(f"Deck Tool - {os.path.basename(path)}")
-    # endregion
+        self.setWindowTitle(f"Deck Tool - {os.path.basename(path)}")
+
+    def save_optimize_state(self) -> None:
+        if not self.current_file:
+            return
+        try:
+            save_optimize_state(self.current_file, self.optimize_state)
+        except Exception:
+            pass

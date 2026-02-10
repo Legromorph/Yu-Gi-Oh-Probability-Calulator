@@ -1,3 +1,3 @@
-from .controller import OptimizeTabController as OptimizeTab
+from .view import OptimizeTab
 
 __all__ = ["OptimizeTab"]

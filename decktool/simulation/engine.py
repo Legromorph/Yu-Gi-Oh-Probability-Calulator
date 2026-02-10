@@ -6,6 +6,7 @@ import random
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..utils import is_hand_ref, hand_ref_id, is_tag_ref, tag_ref_name
@@ -14,6 +15,77 @@ from ..utils import is_hand_ref, hand_ref_id, is_tag_ref, tag_ref_name
 # region Constants
 # These are treated as "draw counts" instead of impact
 DRAW_TRAPS = {"fuwa", "purulia"}
+# endregion
+
+
+# region Simulation context
+@dataclass(frozen=True)
+class SimulationContext:
+    hands_pre_all: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]]
+    hands_pre_prob: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]]
+    hands_pre_trap_only: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]]
+    hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]]
+    hand_min_counts: Dict[str, int]
+    draw_effects: Dict[str, Dict[str, Any]]
+    card_to_tags: Dict[str, List[str]]
+    handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]]
+    trap_names: List[str]
+    draw_traps: set[str]
+
+
+def build_simulation_context(
+    ideal_hands: List[Dict[str, Any]],
+    handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
+    trap_defs: Optional[Dict[str, str]] = None,
+    card_meta: Optional[Dict[str, Any]] = None,
+    trap_names: Optional[List[str]] = None,
+) -> SimulationContext:
+    draw_traps: set[str] = set()
+    if trap_defs:
+        if trap_names is None:
+            trap_names = sorted(trap_defs.keys())
+        draw_traps = {t for t, mode in (trap_defs or {}).items() if str(mode) == "draws"}
+    else:
+        if trap_names is None:
+            trap_names = _infer_trap_names(handtrap_effects)
+        draw_traps = _infer_draw_traps(handtrap_effects)
+
+    hands_pre_all: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
+    hands_pre_prob: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
+    hands_pre_trap_only: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
+    for h in ideal_hands:
+        hid = str(h.get("id", "")).strip() or f"hand_{len(hands_pre_all) + 1}"
+        name = str(h.get("name", hid)).strip() or hid
+        must, or_groups = _extract_hand_definition(h)
+        base_score = int(h.get("base_score", 0))
+        handtrap_only = bool(h.get("handtrap_only", False))
+        entry = (hid, name, must, or_groups, base_score, handtrap_only)
+        hands_pre_all.append(entry)
+        if handtrap_only:
+            hands_pre_trap_only.append(entry)
+        else:
+            hands_pre_prob.append(entry)
+
+    hands_by_id = {
+        hid: (must, or_groups, base_score, handtrap_only)
+        for hid, _n, must, or_groups, base_score, handtrap_only in hands_pre_all
+    }
+    hand_min_counts: Dict[str, int] = {}
+    for hid, _n, must, or_groups, _score, _ht_only in hands_pre_all:
+        hand_min_counts[hid] = _min_required_count(must, or_groups, hands_by_id, {hid})
+
+    return SimulationContext(
+        hands_pre_all=hands_pre_all,
+        hands_pre_prob=hands_pre_prob,
+        hands_pre_trap_only=hands_pre_trap_only,
+        hands_by_id=hands_by_id,
+        hand_min_counts=hand_min_counts,
+        draw_effects=_extract_draw_effects(card_meta),
+        card_to_tags=_extract_tag_index(card_meta),
+        handtrap_effects=handtrap_effects,
+        trap_names=list(trap_names or []),
+        draw_traps=draw_traps,
+    )
 # endregion
 
 
@@ -655,6 +727,7 @@ def simulate_opening_stats(
     executor: Optional[ProcessPoolExecutor] = None,
     dup_penalty_weight: float = 0.0,
     track_tag_configs: bool = False,
+    context: Optional[SimulationContext] = None,
 ) -> Dict[str, Any]:
     """
     Computes (best-line per opening hand):
@@ -680,42 +753,26 @@ def simulate_opening_stats(
     if hand_size > len(deck):
         raise ValueError("Hand size larger than deck size.")
 
-    draw_traps: set[str] = set()
-    if trap_defs:
-        if trap_names is None:
-            trap_names = sorted(trap_defs.keys())
-        draw_traps = {t for t, mode in (trap_defs or {}).items() if str(mode) == "draws"}
-    else:
-        if trap_names is None:
-            trap_names = _infer_trap_names(handtrap_effects)
-        draw_traps = _infer_draw_traps(handtrap_effects)
+    if context is None:
+        context = build_simulation_context(
+            ideal_hands=ideal_hands,
+            handtrap_effects=handtrap_effects,
+            trap_defs=trap_defs,
+            card_meta=card_meta,
+            trap_names=trap_names,
+        )
 
-    # 2) Preprocess ideal hands into fast lookup structures.
-    hands_pre_all: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
-    hands_pre_prob: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
-    hands_pre_trap_only: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]] = []
-    for h in ideal_hands:
-        hid = str(h.get("id", "")).strip() or f"hand_{len(hands_pre_all) + 1}"
-        name = str(h.get("name", hid)).strip() or hid
-        must, or_groups = _extract_hand_definition(h)
-        base_score = int(h.get("base_score", 0))
-        handtrap_only = bool(h.get("handtrap_only", False))
-        entry = (hid, name, must, or_groups, base_score, handtrap_only)
-        hands_pre_all.append(entry)
-        if handtrap_only:
-            hands_pre_trap_only.append(entry)
-        else:
-            hands_pre_prob.append(entry)
+    hands_pre_all = context.hands_pre_all
+    hands_pre_prob = context.hands_pre_prob
+    hands_pre_trap_only = context.hands_pre_trap_only
+    hands_by_id = context.hands_by_id
+    hand_min_counts = context.hand_min_counts
+    draw_effects = context.draw_effects
+    card_to_tags = context.card_to_tags
+    handtrap_effects = context.handtrap_effects
+    trap_names = context.trap_names
+    draw_traps = context.draw_traps
 
-    hands_by_id = {
-        hid: (must, or_groups, base_score, handtrap_only)
-        for hid, _n, must, or_groups, base_score, handtrap_only in hands_pre_all
-    }
-    hand_min_counts: Dict[str, int] = {}
-    for hid, _n, must, or_groups, _score, _ht_only in hands_pre_all:
-        hand_min_counts[hid] = _min_required_count(must, or_groups, hands_by_id, {hid})
-    draw_effects = _extract_draw_effects(card_meta)
-    card_to_tags = _extract_tag_index(card_meta)
     dup_penalty_weight = max(0.0, float(dup_penalty_weight or 0.0))
 
     # 3) Prepare counters for aggregation.
@@ -815,11 +872,12 @@ def simulate_opening_stats(
                 ex.shutdown(wait=True)
     else:
         # Single-process fallback (or when workload is too small).
+        rnd = random.Random()
         while done < total:
             this_chunk = min(chunk_size, total - done)
 
             for _ in range(this_chunk):
-                hand = random.sample(deck, hand_size)
+                hand = rnd.sample(deck, hand_size)
                 hc = Counter(hand)
                 tag_counts = _count_tag_cards(hc, card_to_tags)
                 if track_tag_configs and tag_config_hist is not None:
@@ -864,7 +922,7 @@ def simulate_opening_stats(
                         hand_min_counts,
                         draw_effects,
                         card_to_tags,
-                        random,
+                        rnd,
                     )
                     if best_trap_only_id is None:
                         best_trap_only_id = draw_trap_only_id

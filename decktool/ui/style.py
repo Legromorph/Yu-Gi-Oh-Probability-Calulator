@@ -1,167 +1,316 @@
 from __future__ import annotations
 
 # region Imports
-import tkinter as tk
-from tkinter import ttk
+from PySide6 import QtGui, QtWidgets
 # endregion
 
 
 # region App styling
-def apply_app_style(root: tk.Tk) -> None:
-    """Configure theme, colors, and widget styles for the app."""
-    style = ttk.Style(root)
+def apply_app_style(app: QtWidgets.QApplication) -> None:
+    """Apply a modern QSS theme."""
+    app.setStyle("Fusion")
 
-    if "clam" in style.theme_names():
-        style.theme_use("clam")
+    font = QtGui.QFont("IBM Plex Sans", 10)
+    app.setFont(font)
 
-    # ---- Palette ----
-    BG = "#F3F6FB"
-    CARD = "#FFFFFF"
-    BORDER = "#D9E1EE"
-    TEXT = "#0F172A"
-    MUTED = "#64748B"
-    ACCENT = "#2563EB"
-    SELECT = "#DCEBFF"
+    palette = QtGui.QPalette()
+    palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#F5F4F0"))
+    palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#1F2937"))
+    palette.setColor(QtGui.QPalette.Base, QtGui.QColor("#FFFFFF"))
+    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor("#F8FAFC"))
+    palette.setColor(QtGui.QPalette.Text, QtGui.QColor("#1F2937"))
+    palette.setColor(QtGui.QPalette.Button, QtGui.QColor("#EEF2FF"))
+    palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor("#1F2937"))
+    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor("#2563EB"))
+    palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor("#FFFFFF"))
+    app.setPalette(palette)
 
-    root.configure(bg=BG)
+    qss = """
+    QWidget {
+        color: #1F2937;
+        font-family: 'IBM Plex Sans', 'Noto Sans', 'Segoe UI';
+        font-size: 10pt;
+    }
+    QMainWindow {
+        background: #F5F4F0;
+    }
+    QDialog, QFileDialog, QMenu, QMenuBar, QStatusBar {
+        background: #F5F4F0;
+    }
+    QFrame[role="header"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 #F9FAFB, stop:1 #EEF2FF);
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+    }
+    QLabel[role="title"] {
+        font-size: 18pt;
+        font-weight: 600;
+    }
+    QLabel[role="subtitle"] {
+        color: #6B7280;
+        font-weight: 600;
+    }
+    QLabel[badge="true"] {
+        background: #EEF2FF;
+        border: 1px solid #D1D5DB;
+        border-radius: 10px;
+        padding: 2px 6px;
+    }
+    QFrame[card="true"] {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+    }
+    QLabel[muted="true"] {
+        color: #6B7280;
+    }
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit {
+        background: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-radius: 10px;
+        padding: 6px 10px;
+        selection-background-color: #2563EB;
+        selection-color: #FFFFFF;
+    }
+    QComboBox {
+        border: 1px solid #c0c0c0;
+        border-radius: 6px;
+        padding: 6px 24px 6px 8px;
+    }
+    QComboBox::drop-down {
+        border: none;
+        width: 20px;
+    }
+    QComboBox::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-top: 7px solid #555;
+    }
+    QComboBox QAbstractItemView {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 6px;
+        selection-background-color: #E0E7FF;
+        selection-color: #1F2937;
+    }
+    QSpinBox, QDoubleSpinBox {
+        min-height: 30px;
+        padding-right: 20px;
+        border: 1px solid #c0c0c0;
+        border-radius: 6px;
+    }
+    QSpinBox::up-button, QDoubleSpinBox::up-button,
+    QSpinBox::down-button, QDoubleSpinBox::down-button {
+        width: 16px;
+        border: none;
+        background: transparent;
+    }
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-bottom: 7px solid #555;
+    }
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+        image: none;
+        width: 0;
+        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 7px solid #555;
+    }
+    QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus {
+        border: 1px solid #2563EB;
+        background: #F8FAFF;
+    }
+    QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QTextEdit:disabled {
+        background: #F1F5F9;
+        color: #94A3B8;
+    }
+    QListWidget, QTableWidget, QTreeView, QAbstractScrollArea, QScrollArea {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+    }
+    QScrollArea QWidget {
+        background: #FFFFFF;
+    }
+    QPushButton {
+        background: #EEF2FF;
+        border: 1px solid #D1D5DB;
+        border-radius: 10px;
+        padding: 7px 14px;
+    }
+    QPushButton:hover {
+        background: #E0E7FF;
+    }
+    QPushButton[primary="true"] {
+        background: #2563EB;
+        border: 1px solid #1D4ED8;
+        color: white;
+        font-weight: 600;
+    }
+    QPushButton[primary="true"]:hover {
+        background: #1D4ED8;
+    }
+    QPushButton[danger="true"] {
+        background: #DC2626;
+        border: 1px solid #B91C1C;
+        color: white;
+        font-weight: 600;
+    }
+    QPushButton[danger="true"]:hover {
+        background: #B91C1C;
+    }
+    QTabWidget::pane {
+        border: 1px solid #E5E7EB;
+        margin-top: -1px;
+        background: #FFFFFF;
+    }
+    QTabBar {
+        background: transparent;
+        border: none;
+    }
+    QTabBar::tab {
+        background: #F1F5F9;
+        padding: 8px 14px;
+        margin-right: 2px;
+        margin-bottom: -1px;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        border: 1px solid #E5E7EB;
+    }
+    QTabBar::tab:selected {
+        background: #FFFFFF;
+        border-bottom: 1px solid #FFFFFF;
+    }
+    QTableWidget {
+        background: #FFFFFF;
+        gridline-color: #E5E7EB;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+    }
+    QHeaderView::section {
+        background: #EEF2FF;
+        padding: 6px;
+        border: none;
+        font-weight: 600;
+    }
+    QProgressBar {
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        background: #F1F5F9;
+        text-align: center;
+        padding: 1px;
+    }
+    QProgressBar::chunk {
+        background: #2563EB;
+        border-radius: 7px;
+    }
+    QSlider::groove:horizontal {
+        height: 6px;
+        background: #E5E7EB;
+        border-radius: 3px;
+    }
+    QSlider::handle:horizontal {
+        background: #2563EB;
+        border: 1px solid #1D4ED8;
+        width: 14px;
+        margin: -4px 0;
+        border-radius: 7px;
+    }
+    QScrollBar:vertical {
+        background: #F2F2F7;
+        width: 12px;
+        margin: 2px 2px 2px 2px;
+        border-radius: 8px;
+    }
+    QScrollBar::handle:vertical {
+        background: #C7C7CC;
+        border-radius: 999px;
+        min-height: 24px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #94A3B8;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+        width: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: transparent;
+    }
+    QScrollBar:horizontal {
+        background: #F2F2F7;
+        height: 12px;
+        margin: 2px 2px 2px 2px;
+        border-radius: 8px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #C7C7CC;
+        border-radius: 999px;
+        min-width: 24px;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background: #94A3B8;
+    }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        height: 0px;
+        width: 0px;
+    }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        background: transparent;
+    }
+    QRadioButton {
+        spacing: 8px;
+    }
+    QRadioButton::indicator {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border: 2px solid #b0b0b0;
+        background: white;
+    }
+    QRadioButton::indicator:checked {
+        border: 2px solid #007AFF;
+        background: white;
+    }
+    QRadioButton::indicator:checked::after {
+        content: "";
+        width: 8px;
+        height: 8px;
+        margin: 4px;
+        border-radius: 4px;
+        background: #007AFF;
+    }
+    QCheckBox {
+        spacing: 8px;
+        color: #1F2937;
+    }
+    QCheckBox::indicator {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border: 1px solid #C7C7CC;
+        background: #FFFFFF;
+    }
+    QCheckBox::indicator:hover {
+        border: 1px solid #9CA3AF;
+        background: #F8FAFC;
+    }
+    QCheckBox::indicator:checked {
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.35,
+            stop:0 #FFFFFF, stop:0.45 #FFFFFF,
+            stop:0.46 #0A84FF, stop:1 #0A84FF);
+        border: 1px solid #007AFF;
+    }
+    """
 
-    # Fonts
-    root.option_add("*Font", ("Segoe UI", 10))
-    root.option_add("*Dialog.msg.font", ("Segoe UI", 10))
-    root.option_add("*Menu*Font", ("Segoe UI", 10))
-
-    # Base
-    style.configure(".", background=BG, foreground=TEXT)
-    style.configure("TFrame", background=BG)
-    style.configure("TLabel", background=BG, foreground=TEXT)
-    style.configure("Muted.TLabel", background=BG, foreground=MUTED)
-    style.configure("Header.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 16, "bold"))
-    style.configure("Subheader.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
-
-    # Card-like frames
-    style.configure(
-        "Card.TLabelframe",
-        background=CARD,
-        bordercolor=BORDER,
-        relief="solid",
-        borderwidth=1,
-    )
-    style.configure(
-        "Card.TLabelframe.Label",
-        background=CARD,
-        foreground=TEXT,
-        font=("Segoe UI", 10, "bold"),
-    )
-    style.configure("Card.TFrame", background=CARD)
-
-    # Inputs
-    style.configure("TEntry", padding=(10, 7), relief="solid", borderwidth=1)
-    style.configure("TCombobox", padding=(10, 7))
-    style.configure("TSpinbox", padding=(10, 7))
-
-    # Notebook
-    style.configure("TNotebook", background=BG, borderwidth=0)
-    style.configure(
-        "TNotebook.Tab",
-        padding=(12, 8),
-        background=BG,
-        foreground=MUTED,
-    )
-    style.map(
-        "TNotebook.Tab",
-        background=[("selected", CARD)],
-        foreground=[("selected", TEXT)],
-        padding=[("selected", (16, 12)), ("!selected", (12, 8))],
-    )
-
-    # Tables
-    style.configure(
-        "Treeview",
-        background=CARD,
-        fieldbackground=CARD,
-        foreground=TEXT,
-        borderwidth=1,
-        relief="solid",
-        rowheight=28,
-    )
-    style.configure(
-        "Treeview.Heading",
-        background="#EEF2FF",
-        foreground=TEXT,
-        relief="flat",
-        font=("Segoe UI", 10, "bold"),
-        padding=(10, 7),
-    )
-    style.map("Treeview", background=[("selected", SELECT)], foreground=[("selected", TEXT)])
-
-    style.configure("TProgressbar", troughcolor="#E5E7EB", bordercolor=BORDER, background=ACCENT)
-
-    # ---- Buttons: ONE source of truth ----
-    _install_button_styles(style)
-
-
-def _install_button_styles(style: ttk.Style) -> None:
-    """Define button styles once so all tabs stay consistent."""
-    base_font = ("TkDefaultFont", 10)
-    small_font = ("TkDefaultFont", 9)
-
-    # Normal button
-    style.configure("TButton", padding=(10, 7), font=base_font)
-
-    # Primary
-    style.configure("Primary.TButton", padding=(12, 7), font=base_font)
-    style.map(
-        "Primary.TButton",
-        foreground=[("disabled", "#9aa4b2"), ("!disabled", "white")],
-        background=[
-            ("pressed", "#1E40AF"),
-            ("active", "#1D4ED8"),
-            ("!disabled", "#2563EB"),
-        ],
-        bordercolor=[("!disabled", "#2563EB")],
-        focuscolor=[("!disabled", "#2563EB")],
-        lightcolor=[("!disabled", "#2563EB")],
-        darkcolor=[("!disabled", "#2563EB")],
-    )
-
-    # Danger
-    style.configure("Danger.TButton", padding=(12, 7), font=base_font)
-    style.map(
-        "Danger.TButton",
-        foreground=[("disabled", "#9aa4b2"), ("!disabled", "white")],
-        background=[
-            ("pressed", "#991B1B"),
-            ("active", "#B91C1C"),
-            ("!disabled", "#DC2626"),
-        ],
-        bordercolor=[("!disabled", "#DC2626")],
-        focuscolor=[("!disabled", "#DC2626")],
-        lightcolor=[("!disabled", "#DC2626")],
-        darkcolor=[("!disabled", "#DC2626")],
-    )
-
-    # Small variants
-    style.configure("Small.TButton", padding=(8, 5), font=small_font)
-
-    style.configure("SmallPrimary.TButton", padding=(8, 5), font=small_font)
-    style.map(
-        "SmallPrimary.TButton",
-        foreground=style.map("Primary.TButton", "foreground"),
-        background=style.map("Primary.TButton", "background"),
-        bordercolor=style.map("Primary.TButton", "bordercolor"),
-        focuscolor=style.map("Primary.TButton", "focuscolor"),
-        lightcolor=style.map("Primary.TButton", "lightcolor"),
-        darkcolor=style.map("Primary.TButton", "darkcolor"),
-    )
-
-    style.configure("SmallDanger.TButton", padding=(8, 5), font=small_font)
-    style.map(
-        "SmallDanger.TButton",
-        foreground=style.map("Danger.TButton", "foreground"),
-        background=style.map("Danger.TButton", "background"),
-        bordercolor=style.map("Danger.TButton", "bordercolor"),
-        focuscolor=style.map("Danger.TButton", "focuscolor"),
-        lightcolor=style.map("Danger.TButton", "lightcolor"),
-        darkcolor=style.map("Danger.TButton", "darkcolor"),
-    )
+    app.setStyleSheet(qss)
 # endregion

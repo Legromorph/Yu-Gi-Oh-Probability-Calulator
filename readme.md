@@ -4,8 +4,9 @@ This app is a hands-on toolkit for testing opening hands, handtraps, and decklis
 
 ## Quick Start
 
+- Install dependencies: `pip install -r requirements.txt`
 - Run with `python run.py` (or your venv’s Python).
-- Open or create a project JSON.
+- Open or create a project file (`.deckdb` recommended, `.json` supported).
 - Start with the **Deck** tab, then define **Ideal Hands** and **Handtraps**, and finally run **Simulation** or **Optimize**.
 
 ## Core Ideas (Glossary)
@@ -56,10 +57,13 @@ Searches for a better list based on your ideal hands.
 - **Min/Max deck size**: Constrains the total deckcount.
 - **Per-card limits**: Each card can have a min/max (0–3), plus a lock to freeze it.
 - **Deckcount as a variable**: The optimizer can add blanks to reach a higher deckcount, but it will not remove real cards just to create blanks.
+- **Tag priorities**: Weight specific tags to bias the search (optional).
 
 Progress and feedback:
 - Steps and evaluations are shown live (you see how many candidates are being tested).
+- ETA is estimated from recent step times.
 - The result summary shows base vs. optimized probability and deck size.
+- Optimization state is saved on pause and can be resumed after reloading.
 
 ### 5) Simulation
 
@@ -95,14 +99,15 @@ Simulation results include two metrics to compare variants at a glance:
 - **RKI** (Road‑of‑the‑King‑inspired): A weighted consistency score that rewards strong openings and penalizes bloated hands.
 - **TOE** (Theory‑of‑Everything‑inspired): A composite measure combining consistency, resilience, and complexity.
 
-Higher values are better. Deltas are shown relative to the current base variant.
+Higher values are better.
 
 ## Notes
 
 - All UI labels are in English.
 - Bench cards are known to the system with a count of 0, so ideal hands referencing them won’t error.
 - JSON files are versioned; old projects are migrated automatically when possible.
+- `.deckdb` is the preferred format for faster incremental saves.
 
 ---
 
-If you want additional features or a specific workflow, open an issue or just ask.
+If you want additional features or a specific workflow, just ask.

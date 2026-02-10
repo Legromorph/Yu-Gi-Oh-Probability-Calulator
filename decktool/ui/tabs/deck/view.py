@@ -1,97 +1,312 @@
 from __future__ import annotations
 
 # region Imports
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-from typing import TYPE_CHECKING, Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List, Tuple
 
-from ...context_menu import bind_treeview_right_click_delete
+from PySide6 import QtCore, QtGui, QtWidgets
+
 from ....models import CardMeta, DrawEffect
 from ....constants import CARD_TAGS
-from ....utils import attach_treeview_sorting
+from ....utils import safe_sorted_cards
 
-if TYPE_CHECKING:
+if False:  # TYPE_CHECKING
     from ...main_window import DeckToolMainWindow
 # endregion
 
 
-# region Deck tab
-class DeckTabView:
+class CardSettingsDialog(QtWidgets.QDialog):
+    def __init__(self, app: "DeckToolMainWindow", card: str, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.card = card
+        self.setWindowTitle(f"Card settings - {card}")
+        self.setModal(True)
+
+        self._meta = self.app.card_meta.get(card, CardMeta(tags=[], draw_effect=None))
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        tags_box = QtWidgets.QFrame()
+        tags_box.setProperty("card", True)
+        tags_layout = QtWidgets.QVBoxLayout(tags_box)
+        tags_layout.setContentsMargins(14, 12, 14, 12)
+        tags_layout.setSpacing(8)
+
+        tags_title = QtWidgets.QLabel("Tags")
+        tags_title.setProperty("role", "subtitle")
+        tags_layout.addWidget(tags_title)
+
+        default_tags = list(CARD_TAGS)
+        default_keys = {k for k, _label in default_tags}
+        custom_tags = [t for t in self.app.get_all_tags() if t not in default_keys]
+        tags = default_tags + [(t, t) for t in custom_tags]
+
+        self.tag_checks: Dict[str, QtWidgets.QCheckBox] = {}
+        row = QtWidgets.QHBoxLayout()
+        self.tags_row = row
+        row.setSpacing(12)
+        for key, label in tags:
+            preset = key in (self._meta.tags or [])
+            if key == "engine-req" and "brick" in (self._meta.tags or []):
+                preset = True
+            cb = QtWidgets.QCheckBox(label)
+            cb.setChecked(preset)
+            self.tag_checks[key] = cb
+            row.addWidget(cb)
+        row.addStretch(1)
+        tags_layout.addLayout(row)
+
+        add_row = QtWidgets.QHBoxLayout()
+        add_row.addWidget(QtWidgets.QLabel("New tag"))
+        self.new_tag_edit = QtWidgets.QLineEdit()
+        self.new_tag_edit.setPlaceholderText("e.g. brick")
+        add_row.addWidget(self.new_tag_edit)
+        add_btn = QtWidgets.QPushButton("Add tag")
+        add_btn.clicked.connect(self._add_tag)
+        add_row.addWidget(add_btn)
+        add_row.addStretch(1)
+        tags_layout.addLayout(add_row)
+
+        draw_box = QtWidgets.QFrame()
+        draw_box.setProperty("card", True)
+        draw_layout = QtWidgets.QVBoxLayout(draw_box)
+        draw_layout.setContentsMargins(14, 12, 14, 12)
+        draw_layout.setSpacing(8)
+
+        draw_title = QtWidgets.QLabel("Draw effect")
+        draw_title.setProperty("role", "subtitle")
+        draw_layout.addWidget(draw_title)
+
+        row1 = QtWidgets.QHBoxLayout()
+        self.draw_enabled = QtWidgets.QCheckBox("Enable draw effect")
+        self.draw_enabled.setChecked(self._meta.draw_effect is not None)
+        row1.addWidget(self.draw_enabled)
+        row1.addStretch(1)
+        draw_layout.addLayout(row1)
+
+        row2 = QtWidgets.QHBoxLayout()
+        row2.addWidget(QtWidgets.QLabel("Draw"))
+        self.draw_spin = QtWidgets.QSpinBox()
+        self.draw_spin.setRange(1, 4)
+        self.draw_spin.setValue(self._meta.draw_effect.draw if self._meta.draw_effect else 1)
+        row2.addWidget(self.draw_spin)
+
+        row2.addSpacing(10)
+        row2.addWidget(QtWidgets.QLabel("Cost"))
+        self.cost_combo = QtWidgets.QComboBox()
+        self.cost_combo.addItems(["none", "discard", "banish"])
+        self.cost_combo.setCurrentText(self._meta.draw_effect.cost_mode if self._meta.draw_effect else "none")
+        row2.addWidget(self.cost_combo)
+
+        row2.addSpacing(10)
+        row2.addWidget(QtWidgets.QLabel("Cost count"))
+        self.cost_spin = QtWidgets.QSpinBox()
+        self.cost_spin.setRange(1, 3)
+        self.cost_spin.setValue(self._meta.draw_effect.cost_count if self._meta.draw_effect else 1)
+        row2.addWidget(self.cost_spin)
+        row2.addStretch(1)
+        draw_layout.addLayout(row2)
+
+        draw_layout.addWidget(QtWidgets.QLabel("Cost cards (must have after draw)", alignment=QtCore.Qt.AlignLeft))
+
+        self.cost_list = QtWidgets.QListWidget()
+        self.cost_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        for card in self.app.get_all_deck_cards():
+            self.cost_list.addItem(card)
+        if self._meta.draw_effect and self._meta.draw_effect.cost_cards:
+            wanted = set(self._meta.draw_effect.cost_cards)
+            for i in range(self.cost_list.count()):
+                item = self.cost_list.item(i)
+                if item.text() in wanted:
+                    item.setSelected(True)
+        draw_layout.addWidget(self.cost_list)
+
+        layout.addWidget(tags_box)
+        layout.addWidget(draw_box)
+
+        btns = QtWidgets.QHBoxLayout()
+        btns.addStretch(1)
+        save_btn = QtWidgets.QPushButton("Save")
+        save_btn.setProperty("primary", True)
+        save_btn.clicked.connect(self._save)
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(save_btn)
+        btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+
+        self.draw_enabled.toggled.connect(self._update_draw_state)
+        self._update_draw_state(self.draw_enabled.isChecked())
+
+        self.setMinimumSize(520, 420)
+
+    def _update_draw_state(self, enabled: bool) -> None:
+        self.draw_spin.setEnabled(enabled)
+        self.cost_combo.setEnabled(enabled)
+        self.cost_spin.setEnabled(enabled)
+        self.cost_list.setEnabled(enabled)
+
+    def _normalize_tag(self, raw: str) -> str:
+        return " ".join(raw.strip().split()).lower()
+
+    def _add_tag(self) -> None:
+        raw = self.new_tag_edit.text()
+        key = self._normalize_tag(raw)
+        if not key:
+            return
+        if key in self.tag_checks:
+            self.tag_checks[key].setChecked(True)
+            self.new_tag_edit.clear()
+            return
+        cb = QtWidgets.QCheckBox(key)
+        cb.setChecked(True)
+        self.tag_checks[key] = cb
+        self.new_tag_edit.clear()
+        # insert before stretch
+        if hasattr(self, "tags_row"):
+            self.tags_row.insertWidget(self.tags_row.count() - 1, cb)
+
+    def _save(self) -> None:
+        new_tags = [k for k, cb in self.tag_checks.items() if cb.isChecked()]
+        draw_effect = None
+        if self.draw_enabled.isChecked():
+            draw = max(1, int(self.draw_spin.value()))
+            cost_mode = self.cost_combo.currentText().strip() or "none"
+            cost_count = int(self.cost_spin.value()) if cost_mode != "none" else 0
+            cost_cards = [self.cost_list.item(i).text() for i in range(self.cost_list.count()) if self.cost_list.item(i).isSelected()] if cost_mode != "none" else []
+            draw_effect = DrawEffect(
+                draw=draw,
+                cost_mode=cost_mode,
+                cost_count=max(1, cost_count) if cost_mode != "none" else 0,
+                cost_cards=cost_cards,
+            )
+
+        if not new_tags and draw_effect is None:
+            self.app.card_meta.pop(self.card, None)
+        else:
+            self.app.card_meta[self.card] = CardMeta(tags=new_tags, draw_effect=draw_effect)
+
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        self.accept()
+
+
+class DeckTab(QtWidgets.QWidget):
     """Deck list editor with variant tabs and swap bench."""
+
     def __init__(self, app: "DeckToolMainWindow") -> None:
+        super().__init__()
         self.app = app
         self.variant_tabs: Dict[str, Dict[str, Any]] = {}
-        self.notebook: ttk.Notebook | None = None
-        self.plus_tab: ttk.Frame | None = None
         self.deck_clipboard: Dict[str, int] = {}
+        self.plus_tab: QtWidgets.QWidget | None = None
+        self._syncing_tabs = False
+        self._build_ui()
 
-    def build(self, parent: ttk.Frame) -> None:
-        """Build the deck tab UI."""
-        pane = ttk.Panedwindow(parent, orient="horizontal")
-        pane.pack(fill="both", expand=True, padx=12, pady=12)
+    def _build_ui(self) -> None:
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
 
-        left = ttk.Frame(pane)
-        right = ttk.Frame(pane)
-        pane.add(left, weight=1)
-        pane.add(right, weight=3)
+        left = QtWidgets.QFrame()
+        left.setProperty("card", True)
+        left_layout = QtWidgets.QVBoxLayout(left)
+        left_layout.setContentsMargins(14, 12, 14, 12)
+        left_layout.setSpacing(10)
 
-        left_card = ttk.LabelFrame(left, text="Add / Update", padding=14, style="Card.TLabelframe")
-        left_card.pack(fill="y")
+        title = QtWidgets.QLabel("Add / Update")
+        title.setProperty("role", "subtitle")
+        left_layout.addWidget(title)
 
-        self.deck_card_var = tk.StringVar()
-        self.deck_qty_var = tk.IntVar(value=1)
+        self.card_edit = QtWidgets.QLineEdit()
+        self.card_edit.setPlaceholderText("Card name")
+        left_layout.addWidget(self.card_edit)
 
-        ttk.Label(left_card, text="Card name", style="Muted.TLabel").pack(anchor="w")
-        ttk.Entry(left_card, textvariable=self.deck_card_var, width=28).pack(fill="x", pady=(6, 10))
+        qty_row = QtWidgets.QHBoxLayout()
+        qty_row.addWidget(QtWidgets.QLabel("Quantity"))
+        self.qty_spin = QtWidgets.QSpinBox()
+        self.qty_spin.setRange(0, 60)
+        self.qty_spin.setValue(1)
+        qty_row.addWidget(self.qty_spin)
+        qty_row.addStretch(1)
+        left_layout.addLayout(qty_row)
 
-        row = ttk.Frame(left_card, style="Card.TFrame")
-        row.pack(fill="x")
-        ttk.Label(row, text="Quantity", style="Muted.TLabel").pack(side="left")
-        ttk.Spinbox(row, from_=0, to=60, textvariable=self.deck_qty_var, width=10).pack(side="left", padx=(10, 0))
+        btn_add = QtWidgets.QPushButton("Add / Update")
+        btn_add.setProperty("primary", True)
+        btn_add.clicked.connect(self.add_update)
+        left_layout.addWidget(btn_add)
 
-        btns = ttk.Frame(left_card, style="Card.TFrame")
-        btns.pack(fill="x", pady=(12, 0))
-        ttk.Button(btns, text="Add / Update", style="Primary.TButton", command=self.add_update).pack(fill="x")
-        ttk.Button(btns, text="Card settings…", command=self.open_card_settings).pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Remove selected", command=self.remove_selected).pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Delete variant", style="Danger.TButton", command=self.delete_variant).pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Clear deck", style="Danger.TButton", command=self.clear).pack(fill="x", pady=(8, 0))
+        btn_settings = QtWidgets.QPushButton("Card settings…")
+        btn_settings.clicked.connect(self.open_card_settings)
+        left_layout.addWidget(btn_settings)
 
-        right_card = ttk.LabelFrame(right, text="Deck list variants", padding=14, style="Card.TLabelframe")
-        right_card.pack(fill="both", expand=True)
+        btn_remove = QtWidgets.QPushButton("Remove selected")
+        btn_remove.clicked.connect(self.remove_selected)
+        left_layout.addWidget(btn_remove)
 
-        self.notebook = ttk.Notebook(right_card)
-        self.notebook.pack(fill="both", expand=True)
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        self.notebook.bind("<Button-1>", self._on_tab_click, add="+")
+        btn_delete = QtWidgets.QPushButton("Delete variant")
+        btn_delete.setProperty("danger", True)
+        btn_delete.clicked.connect(self.delete_variant)
+        left_layout.addWidget(btn_delete)
+
+        btn_clear = QtWidgets.QPushButton("Clear deck")
+        btn_clear.setProperty("danger", True)
+        btn_clear.clicked.connect(self.clear)
+        left_layout.addWidget(btn_clear)
+
+        left_layout.addStretch(1)
+
+        right = QtWidgets.QFrame()
+        right.setProperty("card", True)
+        right_layout = QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(14, 12, 14, 12)
+        right_layout.setSpacing(10)
+
+        title2 = QtWidgets.QLabel("Deck list variants")
+        title2.setProperty("role", "subtitle")
+        right_layout.addWidget(title2)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabBar().setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._on_tab_context)
+        right_layout.addWidget(self.tabs, 1)
+
+        root.addWidget(left, 0)
+        root.addWidget(right, 1)
 
         self._build_plus_tab()
-        self._install_tab_context_menu()
         self._build_existing_variant_tabs()
 
+    # -------------------------
+    # Public API
+    # -------------------------
+
     def refresh(self) -> None:
-        """Refresh all variant tables and dependent tabs."""
         self._sync_tabs()
         for deck_id in list(self.variant_tabs.keys()):
             self._refresh_variant(deck_id)
 
-        # update combobox sources in other tabs
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+    # -------------------------
+    # Actions
+    # -------------------------
 
     def add_update(self) -> None:
-        """Add or update a card in the active decklist."""
-        name = self.deck_card_var.get().strip()
-        try:
-            qty = int(self.deck_qty_var.get())
-        except Exception:
-            qty = 0
-
+        name = self.card_edit.text().strip()
+        qty = int(self.qty_spin.value())
         if not name:
-            messagebox.showwarning("Missing data", "Please enter a card name.")
+            QtWidgets.QMessageBox.warning(self, "Missing data", "Please enter a card name.")
             return
         if qty < 0:
-            messagebox.showwarning("Invalid value", "Quantity cannot be negative.")
+            QtWidgets.QMessageBox.warning(self, "Invalid value", "Quantity cannot be negative.")
             return
 
         variant = self.app.get_active_deck()
@@ -101,45 +316,102 @@ class DeckTabView:
             variant.bench.pop(name, None)
         self.app._set_status(f"Updated deck: {name} = {qty}")
         self._refresh_variant(self.app.active_deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
+
+    def copy_selected(self) -> None:
+        table, deck_id, _from_bench = self._focused_table()
+        if table is None:
+            table = self._active_table()
+            deck_id = self.app.active_deck_id
+        if table is None or not deck_id:
+            return
+        items = self._selected_cards_from_table(table)
+        if not items:
+            return
+        self.deck_clipboard = {name: qty for name, qty in items}
+        text = "\n".join(f"{name}\t{qty}" for name, qty in items)
+        QtWidgets.QApplication.clipboard().setText(text)
+        self.app._set_status(f"Copied {len(items)} card(s).")
+
+    def paste_clipboard(self) -> None:
+        target_table, deck_id, to_bench = self._focused_table()
+        if target_table is None:
+            deck_id = self.app.active_deck_id
+            to_bench = False
+        if not deck_id:
+            return
+        cards = dict(self.deck_clipboard)
+        if not cards:
+            text = QtWidgets.QApplication.clipboard().text()
+            cards = self._parse_clipboard_cards(text)
+        if not cards:
+            return
+        variant = self.app.deck_variants.get(deck_id)
+        if not variant:
+            return
+        target = variant.bench if to_bench else variant.decklist
+        other = variant.decklist if to_bench else variant.bench
+        for name, qty in cards.items():
+            target[name] = int(qty)
+            if name in other:
+                other.pop(name, None)
+        self._refresh_variant(deck_id)
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
+        self.app._set_status(f"Pasted {len(cards)} card(s).")
 
     def remove_selected(self) -> None:
-        """Remove the selected card(s) from the active decklist."""
-        tree = self._active_tree()
+        tree = self._active_table()
         if tree is None:
             return
-        sel = tree.selection()
-        if not sel:
+        row = tree.currentRow()
+        if row < 0:
             return
-        card = tree.item(sel[0])["values"][0]
+        card = tree.item(row, 0).text()
         decklist = self.app.get_active_decklist()
         decklist.pop(card, None)
         self.app._set_status(f"Removed: {card}")
         self._refresh_variant(self.app.active_deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
 
     def clear(self) -> None:
-        """Clear the entire active decklist."""
-        if not messagebox.askyesno("Confirm", "Clear the entire deck?"):
+        reply = QtWidgets.QMessageBox.question(self, "Confirm", "Clear the entire deck?")
+        if reply != QtWidgets.QMessageBox.Yes:
             return
         self.app.get_active_decklist().clear()
         self.app._set_status("Deck cleared.")
         self._refresh_variant(self.app.active_deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
 
-    def delete_variant(self, deck_id: Optional[str] = None) -> None:
-        """Delete a deck variant (guarded to keep at least one)."""
+    def delete_variant(self) -> None:
         if len(self.app.deck_variant_order) <= 1:
-            messagebox.showwarning("Not allowed", "You must keep at least one deck variant.")
+            QtWidgets.QMessageBox.warning(self, "Not allowed", "You must keep at least one deck variant.")
             return
-        active_id = deck_id or self.app.active_deck_id
+        active_id = self.app.active_deck_id
         variant = self.app.deck_variants.get(active_id)
         if not variant:
             return
-        if not messagebox.askyesno("Confirm", f"Delete deck variant '{variant.name}'?"):
+        reply = QtWidgets.QMessageBox.question(self, "Confirm", f"Delete deck variant '{variant.name}'?")
+        if reply != QtWidgets.QMessageBox.Yes:
             return
 
         self.app.deck_variants.pop(active_id, None)
@@ -151,212 +423,20 @@ class DeckTabView:
         self.app.refresh_all()
         self.app._set_status(f"Deleted variant {variant.name}")
 
-    def _open_settings_for_tree(self, event: tk.Event) -> None:
-        tree = event.widget if isinstance(event.widget, ttk.Treeview) else self._active_tree()
-        if tree is None:
-            return
-        sel = tree.selection()
-        if not sel:
-            return
-        card = tree.item(sel[0])["values"][0]
-        self.deck_card_var.set(card)
-        self.open_card_settings()
-
-    def _on_select(self, _evt=None) -> None:
-        tree = self._active_tree()
-        if tree is None:
-            return
-        sel = tree.selection()
-        if not sel:
-            return
-        card, qty = tree.item(sel[0])["values"]
-        self.deck_card_var.set(card)
-        self.deck_qty_var.set(int(qty))
-
-    def _get_active_card_name(self) -> Optional[str]:
-        tree = self._active_tree()
-        if tree is not None:
-            sel = tree.selection()
-            if sel:
-                return str(tree.item(sel[0])["values"][0])
-        name = self.deck_card_var.get().strip()
-        return name or None
-
     def open_card_settings(self) -> None:
-        """Open the per-card settings dialog for the selected card."""
         card = self._get_active_card_name()
         if not card:
-            messagebox.showwarning("Missing data", "Please select a card or enter a card name.")
+            QtWidgets.QMessageBox.warning(self, "Missing data", "Please select a card or enter a card name.")
             return
         if card not in self.app.get_active_decklist():
-            messagebox.showwarning("Unknown card", "Card is not in the active deck list.")
+            QtWidgets.QMessageBox.warning(self, "Unknown card", "Card is not in the active deck list.")
             return
 
-        meta = self.app.card_meta.get(card, CardMeta(tags=[], draw_effect=None))
-
-        win = tk.Toplevel(self.app)
-        win.title(f"Card settings - {card}")
-        win.transient(self.app)
-        def safe_grab(attempts: int = 5) -> None:
-            try:
-                win.grab_set()
-            except tk.TclError:
-                if attempts > 0:
-                    win.after(50, lambda: safe_grab(attempts - 1))
-
-        win.after(0, safe_grab)
-
-        root = ttk.Frame(win, padding=14)
-        root.pack(fill="both", expand=True)
-
-        tags_box = ttk.LabelFrame(root, text="Tags", padding=12, style="Card.TLabelframe")
-        tags_box.pack(fill="x")
-
-        default_tags = list(CARD_TAGS)
-        default_keys = {k for k, _label in default_tags}
-        custom_tags = [t for t in self.app.get_all_tags() if t not in default_keys]
-        tags = default_tags + [(t, t) for t in custom_tags]
-        tag_vars: Dict[str, tk.BooleanVar] = {}
-        row = ttk.Frame(tags_box, style="Card.TFrame")
-        row.pack(fill="x")
-        for key, label in tags:
-            if key == "engine-req":
-                preset = key in (meta.tags or []) or "brick" in (meta.tags or [])
-            else:
-                preset = key in (meta.tags or [])
-            var = tk.BooleanVar(value=preset)
-            tag_vars[key] = var
-            ttk.Checkbutton(row, text=label, variable=var).pack(side="left", padx=(0, 12))
-
-        add_row = ttk.Frame(tags_box, style="Card.TFrame")
-        add_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(add_row, text="New tag", style="Muted.TLabel").pack(side="left")
-        new_tag_var = tk.StringVar(value="")
-        new_tag_entry = ttk.Entry(add_row, textvariable=new_tag_var, width=18)
-        new_tag_entry.pack(side="left", padx=(8, 8))
-
-        def normalize_tag(raw: str) -> str:
-            return " ".join(raw.strip().split()).lower()
-
-        def add_tag_from_entry() -> None:
-            raw = new_tag_var.get()
-            key = normalize_tag(raw)
-            if not key:
-                return
-            if key in tag_vars:
-                tag_vars[key].set(True)
-                new_tag_var.set("")
-                return
-            var = tk.BooleanVar(value=True)
-            tag_vars[key] = var
-            ttk.Checkbutton(row, text=key, variable=var).pack(side="left", padx=(0, 12))
-            new_tag_var.set("")
-
-        ttk.Button(add_row, text="Add tag", style="Small.TButton", command=add_tag_from_entry).pack(side="left")
-        new_tag_entry.bind("<Return>", lambda _e: add_tag_from_entry())
-
-        draw_box = ttk.LabelFrame(root, text="Draw effect", padding=12, style="Card.TLabelframe")
-        draw_box.pack(fill="both", expand=True, pady=(12, 0))
-
-        enabled_var = tk.BooleanVar(value=meta.draw_effect is not None)
-        ttk.Checkbutton(draw_box, text="Enable draw effect", variable=enabled_var).grid(row=0, column=0, sticky="w")
-
-        ttk.Label(draw_box, text="Draw", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        draw_var = tk.IntVar(value=meta.draw_effect.draw if meta.draw_effect else 1)
-        draw_spin = ttk.Spinbox(draw_box, from_=1, to=4, textvariable=draw_var, width=6)
-        draw_spin.grid(row=1, column=1, sticky="w", padx=(8, 12), pady=(8, 0))
-
-        ttk.Label(draw_box, text="Cost", style="Muted.TLabel").grid(row=1, column=2, sticky="w", pady=(8, 0))
-        cost_mode_var = tk.StringVar(value=(meta.draw_effect.cost_mode if meta.draw_effect else "none"))
-        cost_combo = ttk.Combobox(draw_box, textvariable=cost_mode_var, values=["none", "discard", "banish"], width=10, state="readonly")
-        cost_combo.grid(row=1, column=3, sticky="w", padx=(8, 12), pady=(8, 0))
-
-        ttk.Label(draw_box, text="Cost count", style="Muted.TLabel").grid(row=1, column=4, sticky="w", pady=(8, 0))
-        cost_count_var = tk.IntVar(value=meta.draw_effect.cost_count if meta.draw_effect else 1)
-        cost_spin = ttk.Spinbox(draw_box, from_=1, to=3, textvariable=cost_count_var, width=6)
-        cost_spin.grid(row=1, column=5, sticky="w", padx=(8, 0), pady=(8, 0))
-
-        ttk.Label(draw_box, text="Cost cards (must have after draw)", style="Muted.TLabel").grid(
-            row=2, column=0, columnspan=6, sticky="w", pady=(10, 4)
-        )
-
-        list_frame = ttk.Frame(draw_box, style="Card.TFrame")
-        list_frame.grid(row=3, column=0, columnspan=6, sticky="nsew")
-        draw_box.rowconfigure(3, weight=1)
-        draw_box.columnconfigure(5, weight=1)
-
-        cost_list = tk.Listbox(list_frame, selectmode="extended", height=6, exportselection=False)
-        ysb = ttk.Scrollbar(list_frame, orient="vertical", command=cost_list.yview)
-        cost_list.configure(yscrollcommand=ysb.set)
-
-        cost_list.pack(side="left", fill="both", expand=True)
-        ysb.pack(side="right", fill="y")
-
-        all_cards = self.app.get_all_deck_cards()
-        for c in all_cards:
-            cost_list.insert("end", c)
-
-        if meta.draw_effect and meta.draw_effect.cost_cards:
-            wanted = set(meta.draw_effect.cost_cards)
-            for i, c in enumerate(all_cards):
-                if c in wanted:
-                    cost_list.selection_set(i)
-
-        def update_draw_state() -> None:
-            enabled = bool(enabled_var.get())
-            if enabled:
-                draw_spin.state(["!disabled"])
-                cost_combo.state(["readonly"])
-                cost_spin.state(["!disabled"])
-            else:
-                draw_spin.state(["disabled"])
-                cost_combo.state(["disabled"])
-                cost_spin.state(["disabled"])
-            cost_list.configure(state="normal" if enabled else "disabled")
-
-        enabled_var.trace_add("write", lambda *_: update_draw_state())
-        update_draw_state()
-
-        btns = ttk.Frame(root, style="Card.TFrame")
-        btns.pack(fill="x", pady=(12, 0))
-
-        def on_save() -> None:
-            new_tags = [k for k, v in tag_vars.items() if v.get()]
-            draw_effect = None
-            if enabled_var.get():
-                draw = max(1, int(draw_var.get()))
-                cost_mode = cost_mode_var.get().strip() or "none"
-                cost_count = int(cost_count_var.get()) if cost_mode != "none" else 0
-                cost_cards = [cost_list.get(i) for i in cost_list.curselection()] if cost_mode != "none" else []
-                draw_effect = DrawEffect(
-                    draw=draw,
-                    cost_mode=cost_mode,
-                    cost_count=max(1, cost_count) if cost_mode != "none" else 0,
-                    cost_cards=cost_cards,
-                )
-
-            if not new_tags and draw_effect is None:
-                self.app.card_meta.pop(card, None)
-            else:
-                self.app.card_meta[card] = CardMeta(tags=new_tags, draw_effect=draw_effect)
-
-            self.app._set_status(f"Saved settings for {card}")
-            self.app.hands_tab.refresh_card_sources()
-            self.app.optimize_tab.refresh()
-            win.destroy()
-
-        ttk.Button(btns, text="Save", style="SmallPrimary.TButton", command=on_save).pack(side="left")
-        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=(8, 0))
-
-        # Ensure the dialog isn't created at a tiny size.
-        win.update_idletasks()
-        req_w = max(520, int(win.winfo_reqwidth()))
-        req_h = max(420, int(win.winfo_reqheight()))
-        win.minsize(req_w, req_h)
-        win.geometry(f"{req_w}x{req_h}")
+        dialog = CardSettingsDialog(self.app, card, self)
+        dialog.exec()
 
     # -------------------------
-    # Variants UI helpers
+    # Variant tabs
     # -------------------------
 
     def _build_existing_variant_tabs(self) -> None:
@@ -366,255 +446,293 @@ class DeckTabView:
             self._select_variant_tab(self.app.active_deck_id)
 
     def _build_plus_tab(self) -> None:
-        if self.notebook is None or self.plus_tab is not None:
-            return
-        self.plus_tab = ttk.Frame(self.notebook)
-        label = ttk.Label(self.plus_tab, text="Add new deck variant", style="Muted.TLabel")
-        label.pack(anchor="center", pady=20)
-        self.notebook.add(self.plus_tab, text="+")
-
-    def _install_tab_context_menu(self) -> None:
-        if self.notebook is None:
-            return
-        self._tab_menu = tk.Menu(self.notebook, tearoff=False)
-        self._tab_menu.add_command(label="Rename", command=self._ctx_rename_variant)
-        self._tab_menu.add_command(label="Delete", command=self._ctx_delete_variant)
-        self.notebook.bind("<Button-3>", self._on_tab_right_click, add="+")
-        self.notebook.bind("<Button-2>", self._on_tab_right_click, add="+")
-
-    def _on_tab_right_click(self, event: tk.Event) -> None:
-        if self.notebook is None:
-            return
-        try:
-            element = self.notebook.identify(event.x, event.y)
-        except Exception:
-            return
-        if element != "label":
-            return
-        try:
-            idx = self.notebook.index(f"@{event.x},{event.y}")
-        except Exception:
-            return
-        tab_id = self.notebook.tabs()[idx]
-        if self.plus_tab is not None and tab_id == str(self.plus_tab):
-            return
-        self._tab_menu_tab_id = tab_id
-        self._tab_menu.tk_popup(event.x_root, event.y_root)
-
-    def _ctx_rename_variant(self) -> None:
-        deck_id = self._deck_id_from_tab_id(getattr(self, "_tab_menu_tab_id", ""))
-        if deck_id:
-            self._rename_variant(deck_id)
-
-    def _ctx_delete_variant(self) -> None:
-        deck_id = self._deck_id_from_tab_id(getattr(self, "_tab_menu_tab_id", ""))
-        if deck_id:
-            self.delete_variant(deck_id=deck_id)
-
-    def _deck_id_from_tab_id(self, tab_id: str) -> Optional[str]:
-        for did, data in self.variant_tabs.items():
-            if str(data["frame"]) == tab_id:
-                return did
-        return None
+        plus = QtWidgets.QWidget()
+        label = QtWidgets.QLabel("Add new deck variant")
+        label.setProperty("muted", True)
+        layout = QtWidgets.QVBoxLayout(plus)
+        layout.addStretch(1)
+        layout.addWidget(label, alignment=QtCore.Qt.AlignCenter)
+        layout.addStretch(1)
+        self.tabs.addTab(plus, "+")
+        self.plus_tab = plus
 
     def _create_variant_tab(self, deck_id: str, name: str) -> None:
-        """Create a UI tab for a deck variant."""
-        if self.notebook is None:
-            return
-        frame = ttk.Frame(self.notebook)
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        top = ttk.Frame(frame, style="Card.TFrame")
-        top.grid(row=0, column=0, sticky="ew")
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(QtWidgets.QLabel("Search"))
+        filter_edit = QtWidgets.QLineEdit()
+        filter_edit.textChanged.connect(lambda _t, did=deck_id: self._refresh_variant(did))
+        top.addWidget(filter_edit, 1)
+        total_label = QtWidgets.QLabel("Total: 0 cards")
+        total_label.setProperty("muted", True)
+        top.addWidget(total_label)
+        layout.addLayout(top)
 
-        ttk.Label(top, text="Search", style="Muted.TLabel").pack(side="left")
-        filter_var = tk.StringVar(value="")
-        ent = ttk.Entry(top, textvariable=filter_var, width=28)
-        ent.pack(side="left", padx=(10, 0))
-        ent.bind("<KeyRelease>", lambda _e, did=deck_id: self._refresh_variant(did))
+        body = QtWidgets.QHBoxLayout()
 
-        total_label = ttk.Label(frame, text="Total: 0 cards", style="Muted.TLabel")
-        total_label.grid(row=1, column=0, sticky="e", pady=(6, 0))
+        deck_table = QtWidgets.QTableWidget(0, 2)
+        deck_table.setHorizontalHeaderLabels(["Card", "Qty"])
+        deck_table.verticalHeader().setVisible(False)
+        deck_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        deck_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        deck_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        deck_table.setSortingEnabled(False)
+        deck_table.itemSelectionChanged.connect(self._on_select)
+        deck_table.itemDoubleClicked.connect(lambda *_: self.open_card_settings())
+        deck_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        deck_table.customContextMenuRequested.connect(
+            lambda pos, did=deck_id, table=deck_table: self._on_table_context(pos, did, table, False)
+        )
+        self._install_table_shortcuts(deck_table)
 
-        table_box = ttk.Frame(frame, style="Card.TFrame")
-        table_box.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
-        table_box.rowconfigure(0, weight=1)
-        table_box.columnconfigure(0, weight=3)
-        table_box.columnconfigure(1, weight=0)
-        table_box.columnconfigure(2, weight=2)
+        deck_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        deck_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
 
-        left_box = ttk.Frame(table_box, style="Card.TFrame")
-        left_box.grid(row=0, column=0, sticky="nsew")
-        left_box.rowconfigure(0, weight=1)
-        left_box.columnconfigure(0, weight=1)
+        mid_col = QtWidgets.QVBoxLayout()
+        mid_col.addStretch(1)
+        btn_to_bench = QtWidgets.QPushButton("→")
+        btn_to_bench.setFixedWidth(36)
+        btn_to_bench.clicked.connect(lambda _=None, did=deck_id: self._move_to_bench(did))
+        btn_to_variant = QtWidgets.QPushButton("←")
+        btn_to_variant.setFixedWidth(36)
+        btn_to_variant.clicked.connect(lambda _=None, did=deck_id: self._move_to_variant(did))
+        mid_col.addWidget(btn_to_bench, alignment=QtCore.Qt.AlignCenter)
+        mid_col.addWidget(btn_to_variant, alignment=QtCore.Qt.AlignCenter)
+        mid_col.addStretch(1)
 
-        mid_box = ttk.Frame(table_box, style="Card.TFrame")
-        mid_box.grid(row=0, column=1, sticky="ns", padx=(8, 8))
+        bench_table = QtWidgets.QTableWidget(0, 2)
+        bench_table.setHorizontalHeaderLabels(["Card", "Qty"])
+        bench_table.verticalHeader().setVisible(False)
+        bench_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        bench_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        bench_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        bench_table.setSortingEnabled(False)
+        bench_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        bench_table.customContextMenuRequested.connect(
+            lambda pos, did=deck_id, table=bench_table: self._on_table_context(pos, did, table, True)
+        )
+        self._install_table_shortcuts(bench_table)
+        bench_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        bench_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
 
-        right_box = ttk.Frame(table_box, style="Card.TFrame")
-        right_box.grid(row=0, column=2, sticky="nsew")
-        right_box.rowconfigure(1, weight=1)
-        right_box.columnconfigure(0, weight=1)
+        body.addWidget(deck_table, 3)
+        body.addLayout(mid_col)
+        body.addWidget(bench_table, 2)
 
-        tree = ttk.Treeview(left_box, columns=("card", "qty"), show="headings", selectmode="extended")
-        tree.heading("card", text="Card")
-        tree.heading("qty", text="Qty")
-        tree.column("card", width=560, anchor="w")
-        tree.column("qty", width=90, anchor="center")
-        attach_treeview_sorting(tree, {"card": "str", "qty": "num"})
+        layout.addLayout(body, 1)
 
-        ysb = ttk.Scrollbar(left_box, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=ysb.set)
-
-        tree.grid(row=0, column=0, sticky="nsew")
-        ysb.grid(row=0, column=1, sticky="ns")
-
-        tree.bind("<<TreeviewSelect>>", self._on_select)
-        tree.bind("<Control-c>", self._copy_selected)
-        tree.bind("<Control-C>", self._copy_selected)
-        tree.bind("<Control-v>", self._paste_to_active)
-        tree.bind("<Control-V>", self._paste_to_active)
-        tree.bind("<Control-a>", self._select_all)
-        tree.bind("<Control-A>", self._select_all)
-        tree.bind("<Command-c>", self._copy_selected)
-        tree.bind("<Command-C>", self._copy_selected)
-        tree.bind("<Command-v>", self._paste_to_active)
-        tree.bind("<Command-V>", self._paste_to_active)
-        tree.bind("<Command-a>", self._select_all)
-        tree.bind("<Command-A>", self._select_all)
-        tree.bind("<Double-1>", self._open_settings_for_tree)
-        bind_treeview_right_click_delete(tree, self.remove_selected, label="Delete deck entry")
-
-        ttk.Button(mid_box, text="→", width=4, command=lambda did=deck_id: self._move_to_bench(did)).pack(pady=(40, 8))
-        ttk.Button(mid_box, text="←", width=4, command=lambda did=deck_id: self._move_to_variant(did)).pack()
-
-        ttk.Label(right_box, text="Swap Bench", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        bench_tree = ttk.Treeview(right_box, columns=("card", "qty"), show="headings", height=10)
-        bench_tree.heading("card", text="Card")
-        bench_tree.heading("qty", text="Qty")
-        bench_tree.column("card", width=260, anchor="w")
-        bench_tree.column("qty", width=70, anchor="center")
-        attach_treeview_sorting(bench_tree, {"card": "str", "qty": "num"})
-
-        bench_scroll = ttk.Scrollbar(right_box, orient="vertical", command=bench_tree.yview)
-        bench_tree.configure(yscrollcommand=bench_scroll.set)
-
-        bench_tree.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        bench_scroll.grid(row=1, column=1, sticky="ns", pady=(6, 0))
-
-        if self.plus_tab is not None:
-            self.notebook.insert(self.plus_tab, frame, text=name)
-        else:
-            self.notebook.add(frame, text=name)
+        idx = self.tabs.count() - 1
+        self.tabs.insertTab(idx, frame, name)
 
         self.variant_tabs[deck_id] = {
             "frame": frame,
-            "filter_var": filter_var,
-            "tree": tree,
+            "filter_edit": filter_edit,
             "total_label": total_label,
-            "bench_tree": bench_tree,
+            "deck_table": deck_table,
+            "bench_table": bench_table,
         }
 
         self._refresh_variant(deck_id)
 
     def _sync_tabs(self) -> None:
-        if self.notebook is None:
+        if self._syncing_tabs:
             return
         expected = list(self.app.deck_variant_order)
         current = list(self.variant_tabs.keys())
         if len(expected) == len(current) and set(expected) == set(current):
+            # Ensure labels and active tab stay in sync after load.
+            self._syncing_tabs = True
+            blocker = QtCore.QSignalBlocker(self.tabs)
+            bar_blocker = QtCore.QSignalBlocker(self.tabs.tabBar())
+            try:
+                for dv in self.app.get_deck_variants_in_order():
+                    data = self.variant_tabs.get(dv.id)
+                    if not data:
+                        continue
+                    idx = self.tabs.indexOf(data["frame"])
+                    if idx >= 0:
+                        self.tabs.setTabText(idx, dv.name)
+                self._select_variant_tab(self.app.active_deck_id)
+            finally:
+                del blocker
+                del bar_blocker
+                self._syncing_tabs = False
             return
 
-        for data in self.variant_tabs.values():
-            self.notebook.forget(data["frame"])
-            data["frame"].destroy()
-        self.variant_tabs.clear()
+        self._syncing_tabs = True
+        blocker = QtCore.QSignalBlocker(self.tabs)
+        bar_blocker = QtCore.QSignalBlocker(self.tabs.tabBar())
+        try:
+            for data in list(self.variant_tabs.values()):
+                idx = self.tabs.indexOf(data["frame"])
+                if idx >= 0:
+                    self.tabs.removeTab(idx)
+            self.variant_tabs.clear()
 
-        self._build_plus_tab()
-        for dv in self.app.get_deck_variants_in_order():
-            self._create_variant_tab(dv.id, dv.name)
-        if self.app.active_deck_id:
+            for dv in self.app.get_deck_variants_in_order():
+                self._create_variant_tab(dv.id, dv.name)
             self._select_variant_tab(self.app.active_deck_id)
+        finally:
+            del blocker
+            del bar_blocker
+            self._syncing_tabs = False
 
     def _select_variant_tab(self, deck_id: str) -> None:
-        if self.notebook is None:
-            return
-        tab = self.variant_tabs.get(deck_id, {}).get("frame")
-        if tab is not None:
-            self.notebook.select(tab)
-
-    def _active_tree(self) -> ttk.Treeview | None:
-        data = self.variant_tabs.get(self.app.active_deck_id)
-        if not data:
-            return None
-        return data["tree"]
-
-    def _deck_id_for_tree(self, tree: ttk.Treeview) -> Optional[str]:
-        for deck_id, data in self.variant_tabs.items():
-            if data.get("tree") == tree:
-                return deck_id
-        return None
-
-    def _refresh_variant(self, deck_id: str) -> None:
         data = self.variant_tabs.get(deck_id)
         if not data:
             return
+        idx = self.tabs.indexOf(data["frame"])
+        if idx >= 0:
+            self.tabs.setCurrentIndex(idx)
 
-        tree = data["tree"]
-        filter_var = data["filter_var"]
-        total_label = data["total_label"]
-        bench_tree = data.get("bench_tree")
-
-        for row in tree.get_children():
-            tree.delete(row)
-
-        flt = filter_var.get().strip().lower()
-        total = 0
-
-        decklist = self.app.deck_variants.get(deck_id)
-        if not decklist:
-            total_label.config(text="Total: 0 cards")
+    def _on_tab_changed(self, index: int) -> None:
+        if self._syncing_tabs:
             return
-
-        for card, qty in decklist.decklist.items():
-            if flt and flt not in card.lower():
-                continue
-            tree.insert("", "end", values=(card, qty))
-            if int(qty) > 0:
-                total += int(qty)
-
-        total_label.config(text=f"Total: {total} cards")
-
-        if bench_tree is not None:
-            for row in bench_tree.get_children():
-                bench_tree.delete(row)
-            for card, qty in self._bench_cards_for_variant(deck_id).items():
-                bench_tree.insert("", "end", values=(card, qty))
-
-    def _on_tab_changed(self, _evt=None) -> None:
-        if self.notebook is None:
+        if index < 0:
             return
-        current = self.notebook.select()
-        if self.plus_tab is not None and current == str(self.plus_tab):
+        if self.plus_tab is not None and self.tabs.widget(index) == self.plus_tab:
             variant = self.app.add_deck_variant()
             self._create_variant_tab(variant.id, variant.name)
             self._select_variant_tab(variant.id)
-            self.app.hands_tab.refresh_card_sources()
-            self.app.optimize_tab.refresh()
-            self.app.sim_tab.refresh_deckcount_default()
+            if self.app.hands_tab:
+                self.app.hands_tab.refresh_card_sources()
+            if self.app.optimize_tab:
+                self.app.optimize_tab.refresh()
+            if self.app.sim_tab:
+                self.app.sim_tab.refresh_deckcount_default()
             self.app._set_status(f"Created deck variant {variant.name}")
             return
 
         for deck_id, data in self.variant_tabs.items():
-            if str(data["frame"]) == current:
+            if data["frame"] == self.tabs.widget(index):
                 self.app.set_active_deck(deck_id)
                 self._refresh_variant(deck_id)
-                self.app.sim_tab.refresh_deckcount_default()
+                if self.app.sim_tab:
+                    self.app.sim_tab.refresh_deckcount_default()
                 break
 
+    def _on_tab_context(self, pos: QtCore.QPoint) -> None:
+        tab_bar = self.tabs.tabBar()
+        idx = tab_bar.tabAt(pos)
+        if idx < 0:
+            return
+        if self.plus_tab is not None and self.tabs.widget(idx) == self.plus_tab:
+            return
+
+        deck_id = None
+        for did, data in self.variant_tabs.items():
+            if data["frame"] == self.tabs.widget(idx):
+                deck_id = did
+                break
+        if not deck_id:
+            return
+
+        menu = QtWidgets.QMenu(self)
+        act_rename = menu.addAction("Rename")
+        act_delete = menu.addAction("Delete")
+        action = menu.exec(tab_bar.mapToGlobal(pos))
+        if action == act_rename:
+            self._rename_variant(deck_id)
+        elif action == act_delete:
+            self._delete_variant_by_id(deck_id)
+
+    def _on_table_context(
+        self,
+        pos: QtCore.QPoint,
+        deck_id: str,
+        table: QtWidgets.QTableWidget,
+        from_bench: bool,
+    ) -> None:
+        index = table.indexAt(pos)
+        if index.isValid():
+            table.selectRow(index.row())
+        items = self._selected_cards_from_table(table)
+        if not items:
+            return
+        menu = QtWidgets.QMenu(self)
+        act_copy = menu.addAction("Copy")
+        label = "Remove from bench" if from_bench else "Remove from deck"
+        act_remove = menu.addAction(label)
+        action = menu.exec(table.viewport().mapToGlobal(pos))
+        if action == act_copy:
+            self.copy_selected()
+        elif action == act_remove:
+            self._remove_cards(deck_id, [name for name, _ in items], from_bench)
+
+    def _rename_variant(self, deck_id: str) -> None:
+        data = self.variant_tabs.get(deck_id)
+        variant = self.app.deck_variants.get(deck_id)
+        if not data or not variant:
+            return
+        new_name, ok = QtWidgets.QInputDialog.getText(self, "Rename deck variant", "New name:", text=variant.name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        variant.name = new_name
+        idx = self.tabs.indexOf(data["frame"])
+        if idx >= 0:
+            self.tabs.setTabText(idx, new_name)
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        self.app._set_status(f"Renamed variant to {new_name}")
+
+    def _delete_variant_by_id(self, deck_id: str) -> None:
+        if len(self.app.deck_variant_order) <= 1:
+            QtWidgets.QMessageBox.warning(self, "Not allowed", "You must keep at least one deck variant.")
+            return
+        variant = self.app.deck_variants.get(deck_id)
+        if not variant:
+            return
+        reply = QtWidgets.QMessageBox.question(self, "Confirm", f"Delete deck variant '{variant.name}'?")
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        self.app.deck_variants.pop(deck_id, None)
+        if deck_id in self.app.deck_variant_order:
+            self.app.deck_variant_order.remove(deck_id)
+        if self.app.deck_variant_order:
+            self.app.active_deck_id = self.app.deck_variant_order[0]
+        self._sync_tabs()
+        self.app.refresh_all()
+        self.app._set_status(f"Deleted variant {variant.name}")
+
+    # -------------------------
+    # Helpers
+    # -------------------------
+
+    def _active_table(self) -> Optional[QtWidgets.QTableWidget]:
+        data = self.variant_tabs.get(self.app.active_deck_id)
+        if not data:
+            return None
+        return data["deck_table"]
+
+    def _get_active_card_name(self) -> Optional[str]:
+        table = self._active_table()
+        if table is not None and table.currentRow() >= 0:
+            return table.item(table.currentRow(), 0).text()
+        name = self.card_edit.text().strip()
+        return name or None
+
+    def _on_select(self) -> None:
+        table = self._active_table()
+        if table is None:
+            return
+        row = table.currentRow()
+        if row < 0:
+            return
+        card_item = table.item(row, 0)
+        qty_item = table.item(row, 1)
+        if not card_item or not qty_item:
+            return
+        self.card_edit.setText(card_item.text())
+        self.qty_spin.setValue(int(qty_item.text()))
+
     def _bench_cards_for_variant(self, deck_id: str) -> Dict[str, int]:
-        """Build the swap-bench view for a given variant."""
         active = self.app.deck_variants.get(deck_id)
         if not active:
             return {}
@@ -645,151 +763,208 @@ class DeckTabView:
         return dict(sorted(bench.items(), key=lambda x: x[0].lower()))
 
     def _move_to_bench(self, deck_id: str) -> None:
-        """Move selected cards from the deck into the variant bench."""
         data = self.variant_tabs.get(deck_id)
         if not data:
             return
-        tree = data["tree"]
-        sel = tree.selection()
-        if not sel:
+        table = data["deck_table"]
+        selection = table.selectionModel()
+        if selection is None:
+            return
+        sel_rows = sorted({idx.row() for idx in selection.selectedRows(0)})
+        if not sel_rows:
             return
         variant = self.app.deck_variants[deck_id]
         decklist = variant.decklist
-        for item in sel:
-            card = tree.item(item)["values"][0]
+        for row in sel_rows:
+            item = table.item(row, 0)
+            if item is None:
+                continue
+            card = item.text()
             qty = int(decklist.get(card, 0))
             decklist.pop(card, None)
             if qty > 0:
                 variant.bench[card] = max(int(variant.bench.get(card, 0)), qty)
         self._refresh_variant(deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
 
     def _move_to_variant(self, deck_id: str) -> None:
-        """Move selected bench cards into the active deck."""
         data = self.variant_tabs.get(deck_id)
         if not data:
             return
-        bench_tree = data.get("bench_tree")
-        if bench_tree is None:
+        bench_table = data["bench_table"]
+        selection = bench_table.selectionModel()
+        if selection is None:
             return
-        sel = bench_tree.selection()
-        if not sel:
+        sel_rows = sorted({idx.row() for idx in selection.selectedRows(0)})
+        if not sel_rows:
             return
         variant = self.app.deck_variants[deck_id]
         decklist = variant.decklist
-        for item in sel:
-            card, qty = bench_tree.item(item)["values"]
-            decklist[card] = int(qty)
+        for row in sel_rows:
+            card_item = bench_table.item(row, 0)
+            qty_item = bench_table.item(row, 1)
+            if card_item is None or qty_item is None:
+                continue
+            card = card_item.text()
+            qty = int(qty_item.text())
+            decklist[card] = qty
             if card in variant.bench:
                 variant.bench.pop(card, None)
         self._refresh_variant(deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
 
-    def _on_tab_click(self, event: tk.Event) -> None:
-        if self.notebook is None:
-            return
-        try:
-            element = self.notebook.identify(event.x, event.y)
-        except Exception:
-            return
-        if element != "label":
-            return
-        try:
-            idx = self.notebook.index(f"@{event.x},{event.y}")
-        except Exception:
-            return
-        try:
-            current_idx = self.notebook.index("current")
-        except Exception:
-            return
-        if idx != current_idx:
-            return
-
-        tab_id = self.notebook.tabs()[idx]
-        if self.plus_tab is not None and tab_id == str(self.plus_tab):
-            return
-
-        deck_id = None
-        for did, data in self.variant_tabs.items():
-            if str(data["frame"]) == tab_id:
-                deck_id = did
-                break
-        if not deck_id:
-            return
-        self._rename_variant(deck_id)
-
-    def _rename_variant(self, deck_id: str) -> None:
-        if self.notebook is None:
-            return
+    def _refresh_variant(self, deck_id: str) -> None:
         data = self.variant_tabs.get(deck_id)
+        if not data:
+            return
+        table = data["deck_table"]
+        filter_edit = data["filter_edit"]
+        total_label = data["total_label"]
+        bench_table = data["bench_table"]
+
+        table_sorting = table.isSortingEnabled()
+        bench_sorting = bench_table.isSortingEnabled()
+        table_block = QtCore.QSignalBlocker(table)
+        bench_block = QtCore.QSignalBlocker(bench_table)
+        table.setUpdatesEnabled(False)
+        bench_table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        bench_table.setSortingEnabled(False)
+        table.clearSelection()
+        bench_table.clearSelection()
+        table.setRowCount(0)
+        bench_table.setRowCount(0)
+
+        flt = filter_edit.text().strip().lower()
+        total = 0
+
+        decklist = self.app.deck_variants.get(deck_id)
+        if not decklist:
+            total_label.setText("Total: 0 cards")
+            return
+
+        for card, qty in decklist.decklist.items():
+            if flt and flt not in card.lower():
+                continue
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QtWidgets.QTableWidgetItem(card))
+            table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(qty)))
+            if int(qty) > 0:
+                total += int(qty)
+
+        total_label.setText(f"Total: {total} cards")
+
+        bench_cards = self._bench_cards_for_variant(deck_id)
+        for card, qty in bench_cards.items():
+            row = bench_table.rowCount()
+            bench_table.insertRow(row)
+            bench_table.setItem(row, 0, QtWidgets.QTableWidgetItem(card))
+            bench_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(qty)))
+
+        table.setSortingEnabled(table_sorting)
+        bench_table.setSortingEnabled(bench_sorting)
+        table.setUpdatesEnabled(True)
+        bench_table.setUpdatesEnabled(True)
+        del table_block
+        del bench_block
+
+    def _install_table_shortcuts(self, table: QtWidgets.QTableWidget) -> None:
+        copy_sc = QtGui.QShortcut(QtGui.QKeySequence.Copy, table)
+        copy_sc.setContext(QtCore.Qt.WidgetShortcut)
+        copy_sc.activated.connect(self.copy_selected)
+        paste_sc = QtGui.QShortcut(QtGui.QKeySequence.Paste, table)
+        paste_sc.setContext(QtCore.Qt.WidgetShortcut)
+        paste_sc.activated.connect(self.paste_clipboard)
+
+    def _focused_table(self) -> Tuple[Optional[QtWidgets.QTableWidget], str, bool]:
+        focus = QtWidgets.QApplication.focusWidget()
+        data = self.variant_tabs.get(self.app.active_deck_id)
+        if not data:
+            return None, "", False
+        deck_table = data["deck_table"]
+        bench_table = data["bench_table"]
+        if focus and (focus == deck_table or deck_table.isAncestorOf(focus)):
+            return deck_table, self.app.active_deck_id, False
+        if focus and (focus == bench_table or bench_table.isAncestorOf(focus)):
+            return bench_table, self.app.active_deck_id, True
+        return None, self.app.active_deck_id, False
+
+    def _selected_cards_from_table(self, table: QtWidgets.QTableWidget) -> List[Tuple[str, int]]:
+        selection = table.selectionModel()
+        if selection is None:
+            return []
+        rows = sorted({idx.row() for idx in selection.selectedRows(0)})
+        items: List[Tuple[str, int]] = []
+        for row in rows:
+            name_item = table.item(row, 0)
+            qty_item = table.item(row, 1)
+            if name_item is None or qty_item is None:
+                continue
+            name = name_item.text().strip()
+            if not name:
+                continue
+            try:
+                qty = int(qty_item.text())
+            except Exception:
+                qty = 0
+            items.append((name, qty))
+        return items
+
+    def _remove_cards(self, deck_id: str, cards: List[str], from_bench: bool) -> None:
         variant = self.app.deck_variants.get(deck_id)
-        if not data or not variant:
+        if not variant or not cards:
             return
+        target = variant.bench if from_bench else variant.decklist
+        for name in cards:
+            target.pop(name, None)
+        self._refresh_variant(deck_id)
+        if self.app.hands_tab:
+            self.app.hands_tab.refresh_card_sources()
+        if self.app.optimize_tab:
+            self.app.optimize_tab.refresh()
+        if self.app.sim_tab:
+            self.app.sim_tab.refresh_deckcount_default()
+        self.app._set_status(f"Removed {len(cards)} card(s).")
 
-        new_name = simpledialog.askstring(
-            "Rename deck variant",
-            "New name:",
-            initialvalue=variant.name,
-            parent=self.app,
-        )
-        if new_name is None:
-            return
-        new_name = new_name.strip()
-        if not new_name:
-            return
-
-        variant.name = new_name
-        self.notebook.tab(data["frame"], text=new_name)
-        self.app.optimize_tab.refresh()
-        self.app._set_status(f"Renamed variant to {new_name}")
-
-    def _copy_selected(self, event: tk.Event) -> str:
-        tree = event.widget if isinstance(event.widget, ttk.Treeview) else self._active_tree()
-        if tree is None:
-            return "break"
-        sel = tree.selection()
-        if not sel:
-            return "break"
-
-        copied: Dict[str, int] = {}
-        for item in sel:
-            card, qty = tree.item(item)["values"]
-            copied[str(card)] = int(qty)
-
-        self.deck_clipboard = copied
-        deck_id = self._deck_id_for_tree(tree)
-        src = ""
-        if deck_id and deck_id in self.app.deck_variants:
-            src = self.app.deck_variants[deck_id].name
-        if src:
-            self.app._set_status(f"Copied {len(copied)} cards from {src}")
-        else:
-            self.app._set_status(f"Copied {len(copied)} cards")
-        return "break"
-
-    def _select_all(self, event: tk.Event) -> str:
-        tree = event.widget if isinstance(event.widget, ttk.Treeview) else self._active_tree()
-        if tree is None:
-            return "break"
-        items = tree.get_children()
-        if items:
-            tree.selection_set(items)
-        return "break"
-
-    def _paste_to_active(self, _event: tk.Event) -> str:
-        if not self.deck_clipboard:
-            self.app._set_status("Clipboard empty.")
-            return "break"
-
-        decklist = self.app.get_active_decklist()
-        for card, qty in self.deck_clipboard.items():
-            decklist[card] = int(decklist.get(card, 0)) + int(qty)
-
-        self._refresh_variant(self.app.active_deck_id)
-        self.app.hands_tab.refresh_card_sources()
-        self.app.sim_tab.refresh_deckcount_default()
-        self.app._set_status(f"Pasted {len(self.deck_clipboard)} cards.")
-        return "break"
-# endregion
+    def _parse_clipboard_cards(self, text: str) -> Dict[str, int]:
+        cards: Dict[str, int] = {}
+        if not text:
+            return cards
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            name = ""
+            qty = None
+            if "\t" in line:
+                name, qty_text = line.split("\t", 1)
+                qty_text = qty_text.strip()
+                if qty_text.isdigit():
+                    qty = int(qty_text)
+            elif "," in line:
+                left, right = line.rsplit(",", 1)
+                if right.strip().isdigit():
+                    name = left
+                    qty = int(right.strip())
+            else:
+                match = re.match(r"^(.*?)(?:\\s*[x×]\\s*(\\d+))?$", line, flags=re.IGNORECASE)
+                if match:
+                    name = match.group(1)
+                    if match.group(2):
+                        qty = int(match.group(2))
+            name = name.strip()
+            if not name:
+                continue
+            cards[name] = int(qty) if qty is not None else 1
+        return cards

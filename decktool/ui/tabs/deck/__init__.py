@@ -1,3 +1,3 @@
-from .controller import DeckTabController as DeckTab
+from .view import DeckTab
 
 __all__ = ["DeckTab"]

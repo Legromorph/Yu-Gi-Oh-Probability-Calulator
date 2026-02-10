@@ -1,89 +1,121 @@
 from __future__ import annotations
 
 # region Imports
-import tkinter as tk
-from tkinter import ttk, messagebox
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Any, Dict
+
+from PySide6 import QtCore, QtWidgets
 
 from ....constants import IMPACT_LABELS
 from ....utils import hand_display_name, safe_sorted_cards
 
-if TYPE_CHECKING:
+if False:  # TYPE_CHECKING
     from ...main_window import DeckToolMainWindow
 # endregion
 
 
-# region Handtraps tab
-class TrapsTabView:
+class TrapsTab(QtWidgets.QWidget):
     """Configure handtrap effects per ideal hand."""
+
     def __init__(self, app: "DeckToolMainWindow") -> None:
+        super().__init__()
         self.app = app
         self.widgets: Dict[str, Dict[str, Any]] = {}
         self.trap_def_rows: Dict[str, Dict[str, Any]] = {}
-        self.trap_defs_frame: ttk.Frame | None = None
-        self.mapping_frame: ttk.Frame | None = None
-        self.new_trap_var: tk.StringVar | None = None
-        self.new_trap_mode_var: tk.StringVar | None = None
+        self._refreshing = False
+        self._edit_mode = False
+        self._build_ui()
 
-    def build(self, parent: ttk.Frame) -> None:
-        """Build the handtraps tab UI."""
-        outer = ttk.Frame(parent, padding=12)
-        outer.pack(fill="both", expand=True)
+    def _build_ui(self) -> None:
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
 
-        top = ttk.LabelFrame(outer, text="Select ideal hand", padding=14, style="Card.TLabelframe")
-        top.pack(fill="x")
+        top = QtWidgets.QFrame()
+        top.setProperty("card", True)
+        top_layout = QtWidgets.QHBoxLayout(top)
+        top_layout.setContentsMargins(14, 12, 14, 12)
+        top_layout.addWidget(QtWidgets.QLabel("Select ideal hand"))
+        self.pick_combo = QtWidgets.QComboBox()
+        self.pick_combo.currentTextChanged.connect(self._on_selected)
+        top_layout.addWidget(self.pick_combo, 1)
+        root.addWidget(top)
 
-        self.pick_var = tk.StringVar()
-        self.combo = ttk.Combobox(top, textvariable=self.pick_var, width=52, state="readonly")
-        self.combo.pack(side="left")
-        self.combo.bind("<<ComboboxSelected>>", self._on_selected)
+        manage = QtWidgets.QFrame()
+        manage.setProperty("card", True)
+        manage_layout = QtWidgets.QVBoxLayout(manage)
+        manage_layout.setContentsMargins(14, 12, 14, 12)
+        manage_layout.setSpacing(8)
 
-        manage = ttk.LabelFrame(outer, text="Handtraps", padding=14, style="Card.TLabelframe")
-        manage.pack(fill="x", pady=(10, 8))
+        manage_header = QtWidgets.QHBoxLayout()
+        manage_header.addWidget(QtWidgets.QLabel("Handtrap definitions"))
+        self.edit_btn = QtWidgets.QPushButton("Edit")
+        self.edit_btn.clicked.connect(self._toggle_edit_mode)
+        manage_header.addStretch(1)
+        manage_header.addWidget(self.edit_btn)
+        manage_layout.addLayout(manage_header)
 
-        add_row = ttk.Frame(manage, style="Card.TFrame")
-        add_row.pack(fill="x")
-        ttk.Label(add_row, text="Name", style="Muted.TLabel").pack(side="left")
-        self.new_trap_var = tk.StringVar(value="")
-        ttk.Entry(add_row, textvariable=self.new_trap_var, width=20).pack(side="left", padx=(8, 12))
-        ttk.Label(add_row, text="Mode", style="Muted.TLabel").pack(side="left")
-        self.new_trap_mode_var = tk.StringVar(value="impact")
-        ttk.Combobox(
-            add_row,
-            textvariable=self.new_trap_mode_var,
-            values=["impact", "draws"],
-            width=10,
-            state="readonly",
-        ).pack(side="left", padx=(8, 12))
-        ttk.Button(add_row, text="Add", style="SmallPrimary.TButton", command=self._add_trap).pack(side="left")
+        self.add_row = QtWidgets.QHBoxLayout()
+        self.add_row.addWidget(QtWidgets.QLabel("Name"))
+        self.new_trap_edit = QtWidgets.QLineEdit()
+        self.add_row.addWidget(self.new_trap_edit)
+        self.add_row.addWidget(QtWidgets.QLabel("Mode"))
+        self.new_trap_mode = QtWidgets.QComboBox()
+        self.new_trap_mode.addItems(["impact", "draws"])
+        self.add_row.addWidget(self.new_trap_mode)
+        self.add_btn = QtWidgets.QPushButton("Add")
+        self.add_btn.setProperty("primary", True)
+        self.add_btn.clicked.connect(self._add_trap)
+        self.add_row.addWidget(self.add_btn)
+        self.add_row.addStretch(1)
+        manage_layout.addLayout(self.add_row)
 
-        self.trap_defs_frame = ttk.Frame(manage, style="Card.TFrame")
-        self.trap_defs_frame.pack(fill="x", pady=(10, 0))
+        self.trap_scroll = QtWidgets.QScrollArea()
+        self.trap_scroll.setWidgetResizable(True)
+        self.trap_scroll.setMinimumHeight(140)
+        self.trap_defs_container = QtWidgets.QWidget()
+        self.trap_defs_frame = QtWidgets.QVBoxLayout(self.trap_defs_container)
+        self.trap_defs_frame.setContentsMargins(0, 0, 0, 0)
+        self.trap_defs_frame.setSpacing(6)
+        self.trap_scroll.setWidget(self.trap_defs_container)
+        manage_layout.addWidget(self.trap_scroll, 1)
+        root.addWidget(manage)
 
-        self.info = ttk.Label(outer, text="No hand selected.", style="Muted.TLabel")
-        self.info.pack(anchor="w", pady=(10, 8))
+        self.info = QtWidgets.QLabel("No hand selected.")
+        self.info.setProperty("muted", True)
+        root.addWidget(self.info)
 
-        mid = ttk.LabelFrame(outer, text="Handtrap mapping", padding=14, style="Card.TLabelframe")
-        mid.pack(fill="both", expand=True)
+        mapping = QtWidgets.QFrame()
+        mapping.setProperty("card", True)
+        mapping_layout = QtWidgets.QVBoxLayout(mapping)
+        mapping_layout.setContentsMargins(14, 12, 14, 12)
+        mapping_layout.setSpacing(8)
+        mapping_layout.addWidget(QtWidgets.QLabel("Handtrap mapping"))
 
-        canvas = tk.Canvas(mid, highlightthickness=0, bd=0)
-        scroll = ttk.Scrollbar(mid, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.mapping_content = QtWidgets.QWidget()
+        self.mapping_layout = QtWidgets.QVBoxLayout(self.mapping_content)
+        self.mapping_layout.setContentsMargins(0, 0, 0, 0)
+        self.mapping_layout.setSpacing(6)
+        self.scroll.setWidget(self.mapping_content)
+        mapping_layout.addWidget(self.scroll, 1)
+        root.addWidget(mapping, 1)
 
-        self.mapping_frame = ttk.Frame(canvas)
-        self.mapping_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.mapping_frame, anchor="nw")
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        bottom = QtWidgets.QHBoxLayout()
+        save_btn = QtWidgets.QPushButton("Save settings")
+        save_btn.setProperty("primary", True)
+        save_btn.clicked.connect(self.save)
+        reset_btn = QtWidgets.QPushButton("Reset this hand")
+        reset_btn.setProperty("danger", True)
+        reset_btn.clicked.connect(self.reset)
+        bottom.addWidget(save_btn)
+        bottom.addWidget(reset_btn)
+        bottom.addStretch(1)
+        root.addLayout(bottom)
 
         self._rebuild_trap_defs()
         self._rebuild_mapping_widgets()
-
-        bottom = ttk.Frame(outer, padding=(0, 10, 0, 0))
-        bottom.pack(fill="x")
-        ttk.Button(bottom, text="Save settings", style="Primary.TButton", command=self.save).pack(side="left")
-        ttk.Button(bottom, text="Reset this hand", style="Danger.TButton", command=self.reset).pack(side="left", padx=(10, 0))
+        self._apply_edit_mode()
 
     def _hand_label(self, hand: Any) -> str:
         label = hand_display_name(hand)
@@ -94,106 +126,104 @@ class TrapsTabView:
     def _sorted_traps(self) -> list[str]:
         return safe_sorted_cards(list(self.app.handtrap_defs.keys()))
 
+    def _clear_layout(self, layout: QtWidgets.QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            if item.layout():
+                self._clear_layout(item.layout())
+
     def _rebuild_trap_defs(self) -> None:
-        if self.trap_defs_frame is None:
-            return
-        for child in self.trap_defs_frame.winfo_children():
-            child.destroy()
+        self._clear_layout(self.trap_defs_frame)
         self.trap_def_rows.clear()
 
-        for i, trap in enumerate(self._sorted_traps()):
-            row = ttk.Frame(self.trap_defs_frame, style="Card.TFrame")
-            row.grid(row=i, column=0, sticky="ew", pady=2)
-            row.columnconfigure(1, weight=1)
+        for trap in self._sorted_traps():
+            row = QtWidgets.QHBoxLayout()
+            label = QtWidgets.QLabel(trap)
+            label.setMinimumWidth(120)
+            row.addWidget(label)
 
-            ttk.Label(row, text=trap, width=16).grid(row=0, column=0, sticky="w")
+            mode_combo = QtWidgets.QComboBox()
+            mode_combo.addItems(["impact", "draws"])
+            mode_combo.setCurrentText(self.app.handtrap_defs.get(trap, "impact"))
+            mode_combo.currentTextChanged.connect(lambda val, t=trap: self._set_trap_mode(t, val))
+            row.addWidget(mode_combo)
 
-            mode_var = tk.StringVar(value=self.app.handtrap_defs.get(trap, "impact"))
-            mode_combo = ttk.Combobox(
-                row,
-                textvariable=mode_var,
-                values=["impact", "draws"],
-                width=10,
-                state="readonly",
-            )
-            mode_combo.grid(row=0, column=1, sticky="w", padx=(8, 12))
-            mode_combo.bind("<<ComboboxSelected>>", lambda _e, t=trap, v=mode_var: self._set_trap_mode(t, v.get()))
+            rm_btn = QtWidgets.QPushButton("Remove")
+            rm_btn.setProperty("danger", True)
+            rm_btn.clicked.connect(lambda _=None, t=trap: self._remove_trap(t))
+            row.addWidget(rm_btn)
+            row.addStretch(1)
+            self.trap_defs_frame.addLayout(row)
 
-            ttk.Button(row, text="Remove", style="SmallDanger.TButton", command=lambda t=trap: self._remove_trap(t)).grid(
-                row=0, column=2, sticky="w"
-            )
+            self.trap_def_rows[trap] = {"mode_combo": mode_combo, "row": row, "remove_btn": rm_btn}
 
-            self.trap_def_rows[trap] = {"row": row, "mode_var": mode_var, "mode_combo": mode_combo}
+        self._apply_edit_mode()
 
     def _rebuild_mapping_widgets(self) -> None:
-        if self.mapping_frame is None:
-            return
-        for child in self.mapping_frame.winfo_children():
-            child.destroy()
+        self._clear_layout(self.mapping_layout)
         self.widgets.clear()
 
-        for i, trap in enumerate(self._sorted_traps()):
+        for trap in self._sorted_traps():
             mode = self.app.handtrap_defs.get(trap, "impact")
-            row = ttk.Frame(self.mapping_frame, padding=(4, 6))
-            row.grid(row=i, column=0, sticky="ew")
-            row.columnconfigure(2, weight=1)
-
-            ttk.Label(row, text=trap, width=14).grid(row=0, column=0, sticky="w")
+            row = QtWidgets.QHBoxLayout()
+            label = QtWidgets.QLabel(trap)
+            label.setMinimumWidth(120)
+            row.addWidget(label)
 
             if mode == "draws":
-                var = tk.IntVar(value=0)
-                sp = ttk.Spinbox(row, from_=0, to=4, textvariable=var, width=8)
-                sp.grid(row=0, column=1, sticky="w", padx=(12, 0))
-                ttk.Label(row, text="Extra draws (0–4)", style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(12, 0))
-                self.widgets[trap] = {"type": "draws", "var": var, "widget": sp}
+                var = QtWidgets.QSpinBox()
+                var.setRange(0, 4)
+                row.addWidget(var)
+                row.addWidget(QtWidgets.QLabel("Extra draws (0–4)"))
+                self.widgets[trap] = {"type": "draws", "var": var}
             else:
-                var = tk.IntVar(value=0)
-                cb = ttk.Combobox(
-                    row,
-                    state="readonly",
-                    width=26,
-                    values=[f"{k} - {IMPACT_LABELS[k].split('-', 1)[1].strip()}" for k in range(5)],
-                )
-                cb.current(0)
-                cb.grid(row=0, column=1, sticky="w", padx=(12, 0))
+                combo = QtWidgets.QComboBox()
+                combo.addItems([f"{k} - {IMPACT_LABELS[k].split('-', 1)[1].strip()}" for k in range(5)])
+                combo.currentIndexChanged.connect(lambda _idx, t=trap, c=combo: self._impact_selected(t, c))
+                row.addWidget(combo)
+                self.widgets[trap] = {"type": "impact", "widget": combo}
 
-                def make_on_select(t=trap, combo=cb):
-                    def _on_sel(_evt=None):
-                        s = combo.get().strip()
-                        v = int(s.split(" ", 1)[0])
-                        self.widgets[t]["var"].set(v)
-                    return _on_sel
+            row.addStretch(1)
+            self.mapping_layout.addLayout(row)
 
-                cb.bind("<<ComboboxSelected>>", make_on_select())
-                self.widgets[trap] = {"type": "impact", "var": var, "widget": cb}
+        self.mapping_layout.addStretch(1)
 
         hand = self.app.get_current_hand()
         if hand:
             self._load(hand.id)
 
+    def _impact_selected(self, trap: str, combo: QtWidgets.QComboBox) -> None:
+        try:
+            val = int(combo.currentText().split(" ", 1)[0])
+        except Exception:
+            val = 0
+        self.widgets[trap]["var"] = val
+
     def _add_trap(self) -> None:
-        if self.new_trap_var is None or self.new_trap_mode_var is None:
+        if not self._edit_mode:
             return
-        raw = self.new_trap_var.get().strip()
-        name = " ".join(raw.split()).lower()
+        name = " ".join(self.new_trap_edit.text().strip().split()).lower()
         if not name:
-            messagebox.showwarning("Missing data", "Please enter a handtrap name.")
+            QtWidgets.QMessageBox.warning(self, "Missing data", "Please enter a handtrap name.")
             return
-        mode = self.new_trap_mode_var.get().strip() or "impact"
+        mode = self.new_trap_mode.currentText().strip() or "impact"
         if mode not in {"impact", "draws"}:
             mode = "impact"
 
         self.app.handtrap_defs[name] = mode
-        self.new_trap_var.set("")
+        self.new_trap_edit.clear()
         self._rebuild_trap_defs()
         self._rebuild_mapping_widgets()
         self.app._set_status(f"Added handtrap: {name}")
 
     def _remove_trap(self, trap: str) -> None:
+        if not self._edit_mode:
+            return
         if trap not in self.app.handtrap_defs:
             return
         self.app.handtrap_defs.pop(trap, None)
-        # Remove stored effects for this trap
         for _hid, effects in self.app.handtrap_effects.items():
             effects.pop(trap, None)
         self._rebuild_trap_defs()
@@ -201,28 +231,65 @@ class TrapsTabView:
         self.app._set_status(f"Removed handtrap: {trap}")
 
     def _set_trap_mode(self, trap: str, mode: str) -> None:
+        if not self._edit_mode:
+            return
         if mode not in {"impact", "draws"}:
             mode = "impact"
         self.app.handtrap_defs[trap] = mode
         self._rebuild_mapping_widgets()
 
+    def _toggle_edit_mode(self) -> None:
+        self._edit_mode = not self._edit_mode
+        self._apply_edit_mode()
+
+    def _apply_edit_mode(self) -> None:
+        editing = bool(self._edit_mode)
+        if hasattr(self, "edit_btn"):
+            self.edit_btn.setText("Done" if editing else "Edit")
+        if hasattr(self, "add_row"):
+            for i in range(self.add_row.count()):
+                item = self.add_row.itemAt(i)
+                if item and item.widget():
+                    item.widget().setEnabled(editing)
+        if hasattr(self, "new_trap_edit"):
+            self.new_trap_edit.setEnabled(editing)
+        if hasattr(self, "new_trap_mode"):
+            self.new_trap_mode.setEnabled(editing)
+        if hasattr(self, "add_btn"):
+            self.add_btn.setEnabled(editing)
+        for row in self.trap_def_rows.values():
+            mode_combo = row.get("mode_combo")
+            if mode_combo is not None:
+                mode_combo.setEnabled(editing)
+            rm_btn = row.get("remove_btn")
+            if rm_btn is not None:
+                rm_btn.setEnabled(editing)
+
     def refresh(self) -> None:
-        """Refresh the combobox and current selection."""
-        self._rebuild_trap_defs()
-        self._rebuild_mapping_widgets()
-        self.combo["values"] = [self._hand_label(h) for h in self.app.ideal_hands.values()]
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._rebuild_trap_defs()
+            self._rebuild_mapping_widgets()
+            blocker = QtCore.QSignalBlocker(self.pick_combo)
+            self.pick_combo.clear()
+            self.pick_combo.addItems([self._hand_label(h) for h in self.app.ideal_hands.values()])
 
-        # If editor has current hand -> sync combobox
-        hand = self.app.get_current_hand()
-        if hand:
-            self.pick_var.set(self._hand_label(hand))
-            self._load(hand.id)
-        else:
-            self.info.config(text="No hand selected.")
+            hand = self.app.get_current_hand()
+            if hand:
+                self.pick_combo.setCurrentText(self._hand_label(hand))
+                self._load(hand.id)
+            else:
+                self.info.setText("No hand selected.")
+            del blocker
+        finally:
+            self._refreshing = False
 
-    def _on_selected(self, _evt=None) -> None:
-        """Handle combobox selection changes."""
-        label = self.pick_var.get().strip()
+    def _on_selected(self) -> None:
+        if self._refreshing:
+            return
+        label = self.pick_combo.currentText().strip()
         if not label:
             return
         hid = label.split(" - ", 1)[0].strip()
@@ -230,20 +297,17 @@ class TrapsTabView:
         if not hand:
             return
 
-        # Set editor truth selection:
-        self.app.hand_id_var.set(hand.id)
-        self.app.hand_name_var.set(hand.name)
-        self.app.hand_score_var.set(int(hand.base_score))
-
+        self.app.set_current_hand(hand.id)
         self._load(hand.id)
-        self.app.refresh_hand_dependent_views()
+        # Avoid recursive refresh cycles triggered by pick_combo updates.
+        self.app.hands_tab.refresh_hand_editor()
+        self.app.sim_tab.refresh()
 
     def _load(self, hid: str) -> None:
-        """Load stored handtrap effects into the UI."""
         hand = self.app.ideal_hands.get(hid)
         if not hand:
             return
-        self.info.config(text=f"Hand: {hand.id} | {hand.name} | Base score: {hand.base_score}")
+        self.info.setText(f"Hand: {hand.id} | {hand.name} | Base score: {hand.base_score}")
 
         effects = self.app.handtrap_effects.setdefault(hid, {})
         for trap in self._sorted_traps():
@@ -251,45 +315,44 @@ class TrapsTabView:
             mode = self.app.handtrap_defs.get(trap, "impact")
             if mode == "draws":
                 val = int(eff.get("value", 0))
-                self.widgets[trap]["var"].set(val)
+                self.widgets[trap]["var"].setValue(val)
             else:
                 val = int(eff.get("value", 0))
                 val = max(0, min(4, val))
-                self.widgets[trap]["var"].set(val)
-                self.widgets[trap]["widget"].set(f"{val} - {IMPACT_LABELS[val].split('-', 1)[1].strip()}")
+                combo = self.widgets[trap]["widget"]
+                combo.setCurrentIndex(val)
+                self.widgets[trap]["var"] = val
 
     def save(self) -> None:
-        """Persist current handtrap values to the model."""
         hand = self.app.get_current_hand()
         if not hand:
-            messagebox.showwarning("No selection", "Please select an ideal hand first.")
+            QtWidgets.QMessageBox.warning(self, "No selection", "Please select an ideal hand first.")
             return
 
         effects = self.app.handtrap_effects.setdefault(hand.id, {})
         for trap in self._sorted_traps():
             mode = self.app.handtrap_defs.get(trap, "impact")
             if mode == "draws":
-                draws = int(self.widgets[trap]["var"].get())
+                draws = int(self.widgets[trap]["var"].value())
                 if draws <= 0:
                     effects.pop(trap, None)
                 else:
                     effects[trap] = {"mode": "draws", "value": draws}
             else:
-                impact = int(self.widgets[trap]["var"].get())
+                impact = int(self.widgets[trap]["var"])
                 if impact <= 0:
                     effects.pop(trap, None)
                 else:
                     effects[trap] = {"mode": "impact", "value": impact}
 
-        messagebox.showinfo("Saved", f"Handtrap settings saved for {hand.id}.")
+        QtWidgets.QMessageBox.information(self, "Saved", f"Handtrap settings saved for {hand.id}.")
 
     def reset(self) -> None:
-        """Reset handtrap values for the selected hand."""
         hand = self.app.get_current_hand()
         if not hand:
             return
-        if not messagebox.askyesno("Confirm", "Reset all handtrap values for this hand?"):
+        reply = QtWidgets.QMessageBox.question(self, "Confirm", "Reset all handtrap values for this hand?")
+        if reply != QtWidgets.QMessageBox.Yes:
             return
         self.app.handtrap_effects[hand.id] = {}
         self._load(hand.id)
-# endregion

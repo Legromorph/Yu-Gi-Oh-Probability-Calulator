@@ -1,3 +1,3 @@
-from .controller import SimTabController as SimTab
+from .view import SimTab
 
 __all__ = ["SimTab"]

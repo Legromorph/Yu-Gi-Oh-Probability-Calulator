@@ -1,3 +1,3 @@
-from .controller import TrapsTabController as TrapsTab
+from .view import TrapsTab
 
 __all__ = ["TrapsTab"]
