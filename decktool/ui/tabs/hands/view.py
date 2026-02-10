@@ -5,10 +5,10 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from ...utils import attach_treeview_sorting
+from ....utils import attach_treeview_sorting
 
 if TYPE_CHECKING:
-    from ..main_window import DeckToolMainWindow
+    from ...main_window import DeckToolMainWindow
 # endregion
 
 
@@ -170,6 +170,17 @@ class HandsTabView:
         self.btn_save.pack(side="left")
 
         # =========================
+        # Handtrap-only toggle
+        # =========================
+        row3 = ttk.Frame(self.editor_frame, style="Card.TFrame")
+        row3.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Checkbutton(
+            row3,
+            text="Handtrap-only (exclude from probability stats)",
+            variable=self.app.hand_trap_only_var,
+        ).pack(side="left")
+
+        # =========================
         # Right column: Must + OR horizontally
         # =========================
         right.columnconfigure(0, weight=1)
@@ -207,6 +218,7 @@ class HandsTabView:
         self.must_tree.column("card", width=240, anchor="w")
         self.must_tree.column("qty", width=70, anchor="center")
         self.must_tree.tag_configure("handref", foreground="#2563EB")
+        self.must_tree.tag_configure("tagref", foreground="#0f766e")
         attach_treeview_sorting(self.must_tree, {"card": "str", "qty": "num"})
 
         # Let it fill available area (still no scrollbar)

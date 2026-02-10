@@ -6,23 +6,26 @@ import re
 from tkinter import messagebox
 from typing import TYPE_CHECKING, Optional, Dict, List
 
-from ..context_menu import (
+from ...context_menu import (
     bind_listbox_right_click_delete,
     bind_treeview_right_click_delete,
 )
-from ...models import IdealHand
-from ...utils import (
+from ....models import IdealHand
+from ....utils import (
     apply_cardcount_prefix_range,
     hand_display_name,
     ideal_hand_card_count_range_with_refs,
     is_hand_ref,
     hand_ref_id,
     make_hand_ref,
+    is_tag_ref,
+    make_tag_ref,
+    tag_ref_name,
 )
 
 if TYPE_CHECKING:
-    from ..main_window import DeckToolMainWindow
-    from .hands_tab_view import HandsTabView
+    from ...main_window import DeckToolMainWindow
+    from .view import HandsTabView
 # endregion
 
 
@@ -49,6 +52,12 @@ class HandsTabController:
             self.v.editor_frame.configure(text=f"Editor ({hand.id})")
         else:
             self.v.editor_frame.configure(text="Editor")
+
+    def _hand_label(self, hand: IdealHand) -> str:
+        label = hand_display_name(hand)
+        if getattr(hand, "handtrap_only", False):
+            label += " [HT]"
+        return label
     # endregion
 
     # region Bindings
@@ -86,12 +95,21 @@ class HandsTabController:
         entries: List[str] = list(cards)
         display_to_key: Dict[str, str] = {c: c for c in cards}
 
+        tags = self.app.get_all_tags()
+        tag_entries: List[str] = []
+        for t in tags:
+            label = f"[Tag] {t}"
+            tag_entries.append(label)
+            display_to_key[label] = make_tag_ref(t)
+
+        entries.extend(tag_entries)
+
         current_id = self.app.hand_id_var.get().strip()
         hands = []
         for h in sorted(self.app.ideal_hands.values(), key=lambda x: x.id):
             if h.id == current_id:
                 continue
-            label = f"[Hand] {hand_display_name(h)}"
+            label = f"[Hand] {self._hand_label(h)}"
             hands.append(label)
             display_to_key[label] = make_hand_ref(h.id)
 
@@ -103,11 +121,13 @@ class HandsTabController:
         self._combo_key_to_display = {v: k for k, v in display_to_key.items()}
 
     def _display_for_key(self, key: str) -> str:
+        if is_tag_ref(key):
+            return f"#{tag_ref_name(key)}"
         if is_hand_ref(key):
             hid = hand_ref_id(key)
             hand = self.app.ideal_hands.get(hid)
             if hand:
-                return f"↪ {hand_display_name(hand)}"
+                return f"↪ {self._hand_label(hand)}"
             return f"↪ {hid}"
         return key
 
@@ -120,14 +140,20 @@ class HandsTabController:
     def _normalize_key(self, key: str) -> str:
         if is_hand_ref(key):
             return key
+        if is_tag_ref(key):
+            return key
         if key in self._combo_display_to_key:
             return self._combo_display_to_key[key]
 
         raw = key.strip()
         if raw.startswith("[Hand]"):
             raw = raw.replace("[Hand]", "", 1).strip()
+        if raw.startswith("[Tag]"):
+            raw = raw.replace("[Tag]", "", 1).strip()
         if raw.startswith("↪"):
             raw = raw.replace("↪", "", 1).strip()
+        if raw.startswith("#"):
+            raw = raw.replace("#", "", 1).strip()
 
         if " - " in raw:
             cand = raw.split(" - ", 1)[0].strip()
@@ -135,6 +161,9 @@ class HandsTabController:
             cand = raw
         if cand in self.app.ideal_hands:
             return make_hand_ref(cand)
+        tag_map = {t.lower(): t for t in self.app.get_all_tags()}
+        if cand.lower() in tag_map:
+            return make_tag_ref(tag_map[cand.lower()])
         return key
 
     def _normalize_hand_refs(self, hand: IdealHand) -> None:
@@ -170,7 +199,7 @@ class HandsTabController:
 
         self.v.hands_list.delete(0, "end")
         for h in sorted(self.app.ideal_hands.values(), key=lambda x: (x.id, x.name.lower())):
-            label = hand_display_name(h)
+            label = self._hand_label(h)
             if flt and flt not in label.lower():
                 continue
             self.v.hands_list.insert("end", label)
@@ -198,6 +227,9 @@ class HandsTabController:
         self._set_editor_title(hand)
         if hand:
             self.app.hand_name_var.set(self._strip_cardcount_prefix(hand.name))
+            self.app.hand_trap_only_var.set(bool(getattr(hand, "handtrap_only", False)))
+        else:
+            self.app.hand_trap_only_var.set(False)
 
         if hand:
             self.v.or_hint_var.set("Add a group, select it, then add options.")
@@ -245,6 +277,7 @@ class HandsTabController:
         self.app.hand_id_var.set(hand.id)
         self.app.hand_name_var.set(self._strip_cardcount_prefix(hand.name))
         self.app.hand_score_var.set(int(hand.base_score))
+        self.app.hand_trap_only_var.set(bool(getattr(hand, "handtrap_only", False)))
         self._set_editor_title(hand)
 
         self.app.refresh_hand_dependent_views()
@@ -338,6 +371,7 @@ class HandsTabController:
             return
 
         hand.base_score = int(self.app.hand_score_var.get())
+        hand.handtrap_only = bool(self.app.hand_trap_only_var.get())
         min_needed, max_needed = ideal_hand_card_count_range_with_refs(hand, self.app.ideal_hands)
 
         # store WITH prefix, but keep editor WITHOUT prefix
@@ -357,7 +391,11 @@ class HandsTabController:
             return
         for card, qty in sorted(hand.must.items(), key=lambda x: x[0].lower()):
             disp = self._display_for_key(card)
-            tags = ("handref",) if is_hand_ref(card) else ()
+            tags = ()
+            if is_hand_ref(card):
+                tags = ("handref",)
+            elif is_tag_ref(card):
+                tags = ("tagref",)
             self.v.must_tree.insert("", "end", iid=card, values=(disp, qty), tags=tags)
 
     def _on_select_must(self, _evt=None) -> None:

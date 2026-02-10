@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "decklists": [
     {
       "id": "D01",
@@ -190,7 +190,7 @@
       "draw_effect": {
         "draw": 2,
         "cost_mode": "none",
-        "cost_count": 0,
+        "cost_count": 1,
         "cost_cards": []
       }
     }
@@ -215,7 +215,8 @@
             "vision": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H03",
@@ -236,7 +237,8 @@
             "vision": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H04",
@@ -245,7 +247,8 @@
       "must": {
         "chant": 1
       },
-      "or_groups": []
+      "or_groups": [],
+      "handtrap_only": false
     },
     {
       "id": "H05",
@@ -261,7 +264,8 @@
             "shield bearer": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H06",
@@ -277,7 +281,8 @@
             "swen": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H07",
@@ -287,7 +292,8 @@
         "ascendance": 1,
         "manifestation": 1
       },
-      "or_groups": []
+      "or_groups": [],
+      "handtrap_only": false
     },
     {
       "id": "H09",
@@ -311,7 +317,8 @@
             "eldam": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H10",
@@ -329,7 +336,8 @@
             "tenki": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H11",
@@ -347,7 +355,8 @@
             "shield bearer": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H12",
@@ -386,7 +395,8 @@
             "__hand__:H11": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     },
     {
       "id": "H13",
@@ -425,7 +435,8 @@
             "__hand__:H11": 1
           }
         ]
-      ]
+      ],
+      "handtrap_only": false
     }
   ],
   "handtrap_effects": {
@@ -792,5 +803,199 @@
       }
     }
   },
-  "id_counter": 14
+  "handtrap_defs": {
+    "nibiru": "impact",
+    "ash": "impact",
+    "imperm": "impact",
+    "veiler": "impact",
+    "belle": "impact",
+    "mourner": "impact",
+    "impulse": "impact",
+    "purge": "impact",
+    "fuwa": "draws",
+    "purulia": "draws"
+  },
+  "id_counter": 14,
+  "optimize_state": {
+    "D01": {
+      "version": 1,
+      "variant_id": "D01",
+      "variant_name": "Variant 1",
+      "settings": {
+        "deck_min": 40,
+        "deck_max": 60,
+        "eval_num": 150000,
+        "max_steps": 400,
+        "deep_search": true,
+        "goingfirst": true,
+        "dup_penalty_enabled": false,
+        "dup_penalty_weight": 10.0,
+        "tag_priority_weight": 0.0,
+        "tag_priorities": {
+          "brick": 0.0,
+          "endboard": 0.0,
+          "engine": 0.0,
+          "engine-req": 0.0,
+          "extender": 0.0,
+          "non-engine": 0.0
+        }
+      },
+      "constraints": {
+        "ascendance": [
+          0,
+          3
+        ],
+        "calledby": [
+          0,
+          3
+        ],
+        "chant": [
+          0,
+          3
+        ],
+        "crown": [
+          0,
+          3
+        ],
+        "dropplet": [
+          0,
+          3
+        ],
+        "eldam": [
+          0,
+          3
+        ],
+        "fonix": [
+          0,
+          3
+        ],
+        "krosea": [
+          0,
+          3
+        ],
+        "mandate": [
+          0,
+          3
+        ],
+        "manifestation": [
+          0,
+          3
+        ],
+        "meghala": [
+          0,
+          3
+        ],
+        "mst": [
+          0,
+          3
+        ],
+        "shield bearer": [
+          0,
+          3
+        ],
+        "shiina": [
+          0,
+          3
+        ],
+        "swen": [
+          0,
+          3
+        ],
+        "tenki": [
+          0,
+          3
+        ],
+        "the fallen": [
+          0,
+          3
+        ],
+        "vision": [
+          0,
+          3
+        ],
+        "vortex": [
+          0,
+          3
+        ]
+      },
+      "locked_cards": [],
+      "base_counts": {
+        "ascendance": 2,
+        "calledby": 1,
+        "chant": 3,
+        "crown": 3,
+        "dropplet": 3,
+        "eldam": 3,
+        "fonix": 1,
+        "krosea": 3,
+        "mandate": 1,
+        "manifestation": 1,
+        "meghala": 2,
+        "mst": 3,
+        "shield bearer": 2,
+        "shiina": 2,
+        "swen": 3,
+        "tenki": 1,
+        "the fallen": 3,
+        "vision": 3,
+        "vortex": 1
+      },
+      "base_deckcount": 41,
+      "current_counts": {
+        "ascendance": 3,
+        "calledby": 1,
+        "chant": 3,
+        "crown": 2,
+        "dropplet": 3,
+        "eldam": 3,
+        "fonix": 1,
+        "krosea": 3,
+        "mandate": 1,
+        "manifestation": 2,
+        "meghala": 2,
+        "mst": 3,
+        "shield bearer": 2,
+        "shiina": 2,
+        "swen": 3,
+        "tenki": 3,
+        "the fallen": 3,
+        "vision": 3,
+        "vortex": 1
+      },
+      "current_deckcount": 44,
+      "current_prob": 0.9582466666666667,
+      "current_tag": 0.0,
+      "best_counts": {
+        "ascendance": 3,
+        "calledby": 1,
+        "chant": 3,
+        "crown": 2,
+        "dropplet": 3,
+        "eldam": 3,
+        "fonix": 1,
+        "krosea": 3,
+        "mandate": 1,
+        "manifestation": 2,
+        "meghala": 2,
+        "mst": 3,
+        "shield bearer": 2,
+        "shiina": 2,
+        "swen": 3,
+        "tenki": 3,
+        "the fallen": 3,
+        "vision": 3,
+        "vortex": 1
+      },
+      "best_deckcount": 44,
+      "best_prob": 0.9582466666666667,
+      "best_tag": 0.0,
+      "last_move": null,
+      "step_idx": 1,
+      "explore_steps_left": 80,
+      "elapsed_sec": 329.5784705140013,
+      "step_durations": [
+        2.357086686999537
+      ]
+    }
+  }
 }

@@ -6,8 +6,9 @@ from typing import Any, Dict, List
 from .models import IdealHand
 # endregion
 
-# region Hand reference constants
+# region Hand/tag reference constants
 HAND_REF_PREFIX = "__hand__:"
+TAG_REF_PREFIX = "__tag__:"
 # endregion
 
 
@@ -196,6 +197,25 @@ def hand_ref_id(name: str) -> str:
     if not is_hand_ref(name):
         return ""
     return name[len(HAND_REF_PREFIX):]
+# endregion
+
+
+# region Tag reference helpers
+def make_tag_ref(tag: str) -> str:
+    """Create a stored tag reference token."""
+    return f"{TAG_REF_PREFIX}{tag}"
+
+
+def is_tag_ref(name: str) -> bool:
+    """Check if a string is a tag reference token."""
+    return name.startswith(TAG_REF_PREFIX)
+
+
+def tag_ref_name(name: str) -> str:
+    """Extract the referenced tag name from a token."""
+    if not is_tag_ref(name):
+        return ""
+    return name[len(TAG_REF_PREFIX):]
 # endregion
 
 

@@ -5,17 +5,18 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from typing import TYPE_CHECKING, Dict, Any, Optional
 
-from ..context_menu import bind_treeview_right_click_delete
-from ...models import CardMeta, DrawEffect
-from ...utils import attach_treeview_sorting
+from ...context_menu import bind_treeview_right_click_delete
+from ....models import CardMeta, DrawEffect
+from ....constants import CARD_TAGS
+from ....utils import attach_treeview_sorting
 
 if TYPE_CHECKING:
-    from ..main_window import DeckToolMainWindow
+    from ...main_window import DeckToolMainWindow
 # endregion
 
 
 # region Deck tab
-class DeckTab:
+class DeckTabView:
     """Deck list editor with variant tabs and swap bench."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
@@ -196,8 +197,6 @@ class DeckTab:
         win = tk.Toplevel(self.app)
         win.title(f"Card settings - {card}")
         win.transient(self.app)
-        win.update_idletasks()
-
         def safe_grab(attempts: int = 5) -> None:
             try:
                 win.grab_set()
@@ -213,13 +212,10 @@ class DeckTab:
         tags_box = ttk.LabelFrame(root, text="Tags", padding=12, style="Card.TLabelframe")
         tags_box.pack(fill="x")
 
-        tags = [
-            ("engine", "Engine"),
-            ("engine-req", "Engine requirement"),
-            ("endboard", "Endboard piece"),
-            ("extender", "Extender"),
-            ("non-engine", "Non-engine"),
-        ]
+        default_tags = list(CARD_TAGS)
+        default_keys = {k for k, _label in default_tags}
+        custom_tags = [t for t in self.app.get_all_tags() if t not in default_keys]
+        tags = default_tags + [(t, t) for t in custom_tags]
         tag_vars: Dict[str, tk.BooleanVar] = {}
         row = ttk.Frame(tags_box, style="Card.TFrame")
         row.pack(fill="x")
@@ -231,6 +227,33 @@ class DeckTab:
             var = tk.BooleanVar(value=preset)
             tag_vars[key] = var
             ttk.Checkbutton(row, text=label, variable=var).pack(side="left", padx=(0, 12))
+
+        add_row = ttk.Frame(tags_box, style="Card.TFrame")
+        add_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(add_row, text="New tag", style="Muted.TLabel").pack(side="left")
+        new_tag_var = tk.StringVar(value="")
+        new_tag_entry = ttk.Entry(add_row, textvariable=new_tag_var, width=18)
+        new_tag_entry.pack(side="left", padx=(8, 8))
+
+        def normalize_tag(raw: str) -> str:
+            return " ".join(raw.strip().split()).lower()
+
+        def add_tag_from_entry() -> None:
+            raw = new_tag_var.get()
+            key = normalize_tag(raw)
+            if not key:
+                return
+            if key in tag_vars:
+                tag_vars[key].set(True)
+                new_tag_var.set("")
+                return
+            var = tk.BooleanVar(value=True)
+            tag_vars[key] = var
+            ttk.Checkbutton(row, text=key, variable=var).pack(side="left", padx=(0, 12))
+            new_tag_var.set("")
+
+        ttk.Button(add_row, text="Add tag", style="Small.TButton", command=add_tag_from_entry).pack(side="left")
+        new_tag_entry.bind("<Return>", lambda _e: add_tag_from_entry())
 
         draw_box = ttk.LabelFrame(root, text="Draw effect", padding=12, style="Card.TLabelframe")
         draw_box.pack(fill="both", expand=True, pady=(12, 0))
@@ -318,10 +341,19 @@ class DeckTab:
                 self.app.card_meta[card] = CardMeta(tags=new_tags, draw_effect=draw_effect)
 
             self.app._set_status(f"Saved settings for {card}")
+            self.app.hands_tab.refresh_card_sources()
+            self.app.optimize_tab.refresh()
             win.destroy()
 
         ttk.Button(btns, text="Save", style="SmallPrimary.TButton", command=on_save).pack(side="left")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=(8, 0))
+
+        # Ensure the dialog isn't created at a tiny size.
+        win.update_idletasks()
+        req_w = max(520, int(win.winfo_reqwidth()))
+        req_h = max(420, int(win.winfo_reqheight()))
+        win.minsize(req_w, req_h)
+        win.geometry(f"{req_w}x{req_h}")
 
     # -------------------------
     # Variants UI helpers

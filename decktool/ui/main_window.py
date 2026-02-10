@@ -8,14 +8,15 @@ from tkinter import ttk, filedialog, messagebox
 from typing import Any, Dict, List, Optional
 
 from ..models import IdealHand, DeckVariant, CardMeta
+from ..constants import CARD_TAGS, HANDTRAP_DEFS
 from ..storage import project_to_dict, project_from_dict, load_project, save_project
 from ..utils import safe_sorted_cards
 
-from .tabs.deck_tab import DeckTab
-from .tabs.hands_tab import HandsTab
-from .tabs.traps_tab import TrapsTab
-from .tabs.sim_tab import SimTab
-from .tabs.optimize_tab import OptimizeTab
+from .tabs.deck import DeckTab
+from .tabs.hands import HandsTab
+from .tabs.traps import TrapsTab
+from .tabs.sim import SimTab
+from .tabs.optimize import OptimizeTab
 # endregion
 
 
@@ -41,7 +42,9 @@ class DeckToolMainWindow(tk.Tk):
         self._ensure_default_deck()
         self.ideal_hands: Dict[str, IdealHand] = {}
         self.handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.handtrap_defs: Dict[str, str] = dict(HANDTRAP_DEFS)
         self.card_meta: Dict[str, CardMeta] = {}
+        self.optimize_state: Dict[str, Any] = {}
         self.current_file: Optional[str] = None
         self._id_counter: int = 1
 
@@ -49,6 +52,7 @@ class DeckToolMainWindow(tk.Tk):
         self.hand_id_var = tk.StringVar(value="")   # set by Hands tab editor
         self.hand_name_var = tk.StringVar(value="")
         self.hand_score_var = tk.IntVar(value=0)
+        self.hand_trap_only_var = tk.BooleanVar(value=False)
 
         # UI layout
         self._build_menu()
@@ -174,6 +178,16 @@ class DeckToolMainWindow(tk.Tk):
                 cards.update(dv.bench.keys())
         return safe_sorted_cards(list(cards))
 
+    def get_all_tags(self) -> List[str]:
+        """All known tags across card metadata + defaults."""
+        tags = {k for k, _label in CARD_TAGS}
+        for meta in self.card_meta.values():
+            for t in (meta.tags or []):
+                tag = str(t).strip()
+                if tag:
+                    tags.add(tag)
+        return safe_sorted_cards(list(tags))
+
     # -------------------------
     # Selection helpers (BUGFIX)
     # -------------------------
@@ -250,13 +264,16 @@ class DeckToolMainWindow(tk.Tk):
         self._ensure_default_deck()
         self.ideal_hands.clear()
         self.handtrap_effects.clear()
+        self.handtrap_defs = dict(HANDTRAP_DEFS)
         self.card_meta.clear()
+        self.optimize_state.clear()
         self._id_counter = 1
 
         # clear selection
         self.hand_id_var.set("")
         self.hand_name_var.set("")
         self.hand_score_var.set(0)
+        self.hand_trap_only_var.set(False)
 
         self.title("Deck Tool")
         self.refresh_all()
@@ -273,7 +290,16 @@ class DeckToolMainWindow(tk.Tk):
 
         try:
             data = load_project(path)
-            deck_variants, active_deck_id, card_meta, ideal_hands, handtrap_effects, id_counter = project_from_dict(data)
+            (
+                deck_variants,
+                active_deck_id,
+                card_meta,
+                ideal_hands,
+                handtrap_effects,
+                handtrap_defs,
+                id_counter,
+                optimize_state,
+            ) = project_from_dict(data)
 
             self.deck_variants = {dv.id: dv for dv in deck_variants}
             self.deck_variant_order = [dv.id for dv in deck_variants]
@@ -285,8 +311,10 @@ class DeckToolMainWindow(tk.Tk):
             self._sync_deck_id_counter()
             self.ideal_hands = ideal_hands
             self.handtrap_effects = handtrap_effects
+            self.handtrap_defs = dict(handtrap_defs) if handtrap_defs else dict(HANDTRAP_DEFS)
             self.card_meta = card_meta
             self._id_counter = id_counter
+            self.optimize_state = dict(optimize_state or {})
 
             self.current_file = path
             self.title(f"Deck Tool - {os.path.basename(path)}")
@@ -295,6 +323,7 @@ class DeckToolMainWindow(tk.Tk):
             self.hand_id_var.set("")
             self.hand_name_var.set("")
             self.hand_score_var.set(0)
+            self.hand_trap_only_var.set(False)
 
             self.refresh_all()
             self._set_status(f"Opened: {path}")
@@ -313,13 +342,39 @@ class DeckToolMainWindow(tk.Tk):
                 self.card_meta,
                 self.ideal_hands,
                 self.handtrap_effects,
+                self.handtrap_defs,
                 self._id_counter,
+                self.optimize_state,
             )
             save_project(self.current_file, data)
             self._set_status(f"Saved: {self.current_file}")
             messagebox.showinfo("Saved", f"Project saved:\n{self.current_file}")
         except Exception as e:
             messagebox.showerror("Save failed", f"Could not save:\n{e}")
+
+    def save_project_silent(self, set_status: bool = True, show_errors: bool = True) -> bool:
+        """Save the project without modal dialogs. Returns True if saved."""
+        if self.current_file is None:
+            return False
+        try:
+            data = project_to_dict(
+                self.get_deck_variants_in_order(),
+                self.active_deck_id,
+                self.card_meta,
+                self.ideal_hands,
+                self.handtrap_effects,
+                self.handtrap_defs,
+                self._id_counter,
+                self.optimize_state,
+            )
+            save_project(self.current_file, data)
+            if set_status:
+                self._set_status(f"Saved: {self.current_file}")
+            return True
+        except Exception as e:
+            if show_errors:
+                messagebox.showerror("Save failed", f"Could not save:\n{e}")
+            return False
 
     def save_project_as(self) -> None:
         """Prompt for a save path and write the project."""

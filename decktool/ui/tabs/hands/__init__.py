@@ -3,11 +3,11 @@ from __future__ import annotations
 # region Imports
 from typing import TYPE_CHECKING
 
-from .hands_tab_view import HandsTabView
-from .hands_tab_controller import HandsTabController
+from .view import HandsTabView
+from .controller import HandsTabController
 
 if TYPE_CHECKING:
-    from ..main_window import DeckToolMainWindow
+    from ...main_window import DeckToolMainWindow
     from tkinter import ttk
 # endregion
 

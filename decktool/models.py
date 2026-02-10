@@ -98,6 +98,7 @@ class IdealHand:
     base_score: int
     must: Dict[str, int]               # AND requirements
     or_groups: List[List[Dict[str, int]]]  # each group: list of options; option is {card:qty,...}
+    handtrap_only: bool = False        # if True, excluded from probability stats
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-friendly dict."""
@@ -117,5 +118,6 @@ class IdealHand:
             base_score=int(hd.get("base_score", 0)),
             must={str(k): int(v) for k, v in (must_src or {}).items()},
             or_groups=(hd.get("or_groups", []) or []),
+            handtrap_only=bool(hd.get("handtrap_only", False)),
         )
 # endregion

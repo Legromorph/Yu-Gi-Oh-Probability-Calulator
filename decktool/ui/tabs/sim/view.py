@@ -7,16 +7,16 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from ...simulation.engine import simulate_opening_stats
-from ...utils import attach_treeview_sorting, deck_size_positive, ideal_hand_card_count_range_with_refs
+from ....simulation.engine import simulate_opening_stats
+from ....utils import attach_treeview_sorting, deck_size_positive, ideal_hand_card_count_range_with_refs
 
 if TYPE_CHECKING:
-    from ..main_window import DeckToolMainWindow
+    from ...main_window import DeckToolMainWindow
 # endregion
 
 
 # region Simulation tab
-class SimTab:
+class SimTabView:
     """Run simulations and compare variants."""
     def __init__(self, app: "DeckToolMainWindow") -> None:
         self.app = app
@@ -57,20 +57,20 @@ class SimTab:
         ttk.Label(row2, text="Deckcount (optional)", style="Muted.TLabel").pack(side="left")
         ttk.Entry(row2, textvariable=self.deckcount_var, width=14).pack(side="left", padx=(10, 18))
         ttk.Button(row2, text="Run simulation", style="Primary.TButton", command=self.run).pack(side="left")
+        self.progress = ttk.Progressbar(
+            row2,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            length=220,
+            style="Slim.Horizontal.TProgressbar",
+        )
+        self.progress.pack(side="left", padx=(12, 0))
 
         prog = ttk.Frame(outer, padding=(12, 6))
         prog.pack(fill="x", pady=(8, 0))
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(prog, textvariable=self.status_var, style="Muted.TLabel").pack(anchor="w")
-        self.progress = ttk.Progressbar(
-            prog,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100,
-            length=240,
-            style="Slim.Horizontal.TProgressbar",
-        )
-        self.progress.pack(anchor="w", pady=(6, 0))
 
         results = ttk.LabelFrame(outer, text="Results", padding=14, style="Card.TLabelframe")
         results.pack(fill="both", expand=True, pady=(12, 0))
@@ -78,31 +78,50 @@ class SimTab:
         self.overall_var = tk.StringVar(value="Opening probability (any ideal hand) per variant:")
         ttk.Label(results, textvariable=self.overall_var).pack(anchor="w")
 
-        self.summary_tree = ttk.Treeview(results, columns=("variant", "prob", "delta", "hits"), show="headings", height=5)
+        summary_wrap = ttk.Frame(results, style="Card.TFrame")
+        summary_wrap.pack(fill="x", pady=(8, 0))
+        summary_wrap.columnconfigure(0, weight=1)
+
+        self.summary_tree = ttk.Treeview(
+            summary_wrap,
+            columns=("variant", "prob", "delta", "rki", "toe", "hits"),
+            show="headings",
+            height=5,
+        )
         for col, txt, w in [
-            ("variant", "Variant", 220),
-            ("prob", "Prob", 130),
+            ("variant", "Variant", 200),
+            ("prob", "Prob", 110),
             ("delta", "Δ vs base", 110),
-            ("hits", "Hits", 90),
+            ("rki", "RKI", 100),
+            ("toe", "TOE", 100),
+            ("hits", "Hits", 80),
         ]:
             self.summary_tree.heading(col, text=txt)
             self.summary_tree.column(col, width=w, anchor="w")
         self.summary_tree.column("prob", anchor="center")
         self.summary_tree.column("delta", anchor="center")
+        self.summary_tree.column("rki", anchor="center")
+        self.summary_tree.column("toe", anchor="center")
         self.summary_tree.column("hits", anchor="center")
         attach_treeview_sorting(
             self.summary_tree,
-            {"variant": "str", "prob": "num", "delta": "num", "hits": "num"},
+            {
+                "variant": "str",
+                "prob": "num",
+                "delta": "num",
+                "rki": "num",
+                "toe": "num",
+                "hits": "num",
+            },
         )
-        self.summary_tree.pack(fill="x", pady=(8, 0))
+        self.summary_tree.grid(row=0, column=0, sticky="ew")
+        summary_scroll = ttk.Scrollbar(summary_wrap, orient="vertical", command=self.summary_tree.yview)
+        summary_scroll.grid(row=0, column=1, sticky="ns")
+        self.summary_tree.configure(yscrollcommand=summary_scroll.set)
         self.summary_tree.bind("<Button-3>", self._on_summary_right_click)
         self.summary_tree.bind("<Button-2>", self._on_summary_right_click)
         self._summary_menu = tk.Menu(self.summary_tree, tearoff=False)
         self._summary_menu.add_command(label="Set as base", command=self._set_base_from_context)
-
-        self.metrics_frame = ttk.Frame(results, style="Card.TFrame")
-        self.metrics_frame.pack(fill="x", pady=(8, 0))
-        self._build_metrics_header()
 
         self.results_notebook = ttk.Notebook(results)
         self.results_notebook.pack(fill="both", expand=True, pady=(12, 0))
@@ -301,6 +320,7 @@ class SimTab:
                         decklist={c: variant.decklist.get(c, 0) for c in all_cards},
                         ideal_hands=ideal_list,
                         handtrap_effects=self.app.handtrap_effects,
+                        trap_defs=self.app.handtrap_defs,
                         card_meta={k: v.to_dict() for k, v in self.app.card_meta.items()},
                         deckcount=deckcount,
                         num_hands=num,
@@ -308,6 +328,7 @@ class SimTab:
                         fill_blanks=fill_blanks,
                         chunk_size=chunk,
                         progress_cb=progress,
+                        track_tag_configs=True,
                     )
                     reports.append({"variant": variant, "report": report})
                     done_offset += num
@@ -366,55 +387,21 @@ class SimTab:
             delta_txt = "—" if delta is None else f"{delta:+.4%}"
             tag = self._delta_tag(delta)
             name_label = f"{variant.name} (base)" if idx == base_idx else variant.name
+            rki, toe = self._compute_metrics(report)
             self.summary_tree.insert(
                 "",
                 "end",
                 iid=str(idx),
-                values=(name_label, f"{p_any:.4%}", delta_txt, report["any_hit_count"]),
+                values=(
+                    name_label,
+                    f"{p_any:.4%}",
+                    delta_txt,
+                    f"{rki:.3f}",
+                    f"{toe:.3f}",
+                    report["any_hit_count"],
+                ),
                 tags=(tag,) if tag else (),
             )
-
-        if self.metrics_frame is not None:
-            self._build_metrics_header()
-            base_rki, base_toe = self._compute_metrics(reports[base_idx]["report"])
-            for row_idx, item in enumerate(reports, start=1):
-                idx = row_idx - 1
-                variant = item["variant"]
-                report = item["report"]
-                rki, toe = self._compute_metrics(report)
-                drki = None if idx == base_idx else (rki - base_rki)
-                dtoe = None if idx == base_idx else (toe - base_toe)
-                drki_txt = "—" if drki is None else f"{drki:+.3f}"
-                dtoe_txt = "—" if dtoe is None else f"{dtoe:+.3f}"
-                name_label = f"{variant.name} (base)" if idx == base_idx else variant.name
-
-                c_rki = self._metric_color(drki)
-                c_toe = self._metric_color(dtoe)
-                c_drki = self._metric_color(drki)
-                c_dtoe = self._metric_color(dtoe)
-
-                row_widgets: List[ttk.Label] = []
-                lbl0 = ttk.Label(self.metrics_frame, text=name_label)
-                lbl0.grid(row=row_idx, column=0, sticky="w", padx=(0, 12))
-                row_widgets.append(lbl0)
-
-                lbl1 = ttk.Label(self.metrics_frame, text=f"{rki:.3f}", foreground=c_rki or "")
-                lbl1.grid(row=row_idx, column=1, sticky="w", padx=(0, 12))
-                row_widgets.append(lbl1)
-
-                lbl2 = ttk.Label(self.metrics_frame, text=f"{toe:.3f}", foreground=c_toe or "")
-                lbl2.grid(row=row_idx, column=2, sticky="w", padx=(0, 12))
-                row_widgets.append(lbl2)
-
-                lbl3 = ttk.Label(self.metrics_frame, text=drki_txt, foreground=c_drki or "")
-                lbl3.grid(row=row_idx, column=3, sticky="w", padx=(0, 12))
-                row_widgets.append(lbl3)
-
-                lbl4 = ttk.Label(self.metrics_frame, text=dtoe_txt, foreground=c_dtoe or "")
-                lbl4.grid(row=row_idx, column=4, sticky="w")
-                row_widgets.append(lbl4)
-
-                self._metrics_rows.append(row_widgets)
 
         if self.results_notebook is None:
             return
@@ -432,9 +419,41 @@ class SimTab:
             left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
             right.grid(row=0, column=1, sticky="nsew")
 
-            ttk.Label(left, text="Per ideal hand", style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(left, text="Top tag configs", style="Muted.TLabel").pack(anchor="w")
+            top_wrap = ttk.Frame(left)
+            top_wrap.pack(fill="x", pady=(4, 6))
+            top_wrap.columnconfigure(0, weight=1)
+            top_tree = ttk.Treeview(
+                top_wrap,
+                columns=("config", "share"),
+                show="headings",
+                height=3,
+            )
+            top_tree.heading("config", text="Config")
+            top_tree.heading("share", text="Share")
+            top_tree.column("config", width=300, anchor="w")
+            top_tree.column("share", width=80, anchor="center")
+            top_tree.grid(row=0, column=0, sticky="ew")
+            top_scroll = ttk.Scrollbar(top_wrap, orient="vertical", command=top_tree.yview)
+            top_scroll.grid(row=0, column=1, sticky="ns")
+            top_tree.configure(yscrollcommand=top_scroll.set)
+
+            top_tags = report.get("tag_config_top", []) or []
+            if top_tags:
+                for item in top_tags:
+                    name = str(item.get("name", "")).strip() or "none"
+                    pct = float(item.get("percent", 0.0)) * 100.0
+                    top_tree.insert("", "end", values=(name, f"{pct:.1f}%"))
+            else:
+                top_tree.insert("", "end", values=("—", "—"))
+
+            ttk.Label(left, text="Per ideal hand", style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+            hand_wrap = ttk.Frame(left)
+            hand_wrap.pack(fill="both", expand=True, pady=(8, 0))
+            hand_wrap.columnconfigure(0, weight=1)
+            hand_wrap.rowconfigure(0, weight=1)
             hand_tree = ttk.Treeview(
-                left,
+                hand_wrap,
                 columns=("id", "name", "prob", "delta", "hits"),
                 show="headings",
                 height=14,
@@ -457,11 +476,18 @@ class SimTab:
                 hand_tree,
                 {"id": "str", "name": "str", "prob": "num", "delta": "num", "hits": "num"},
             )
-            hand_tree.pack(fill="both", expand=True, pady=(8, 0))
+            hand_tree.grid(row=0, column=0, sticky="nsew")
+            hand_scroll = ttk.Scrollbar(hand_wrap, orient="vertical", command=hand_tree.yview)
+            hand_scroll.grid(row=0, column=1, sticky="ns")
+            hand_tree.configure(yscrollcommand=hand_scroll.set)
 
-            ttk.Label(right, text="Handtrap means (good openings only)", style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(right, text="Handtrap means (handtrap combos)", style="Muted.TLabel").pack(anchor="w")
+            trap_wrap = ttk.Frame(right)
+            trap_wrap.pack(fill="both", expand=True, pady=(8, 0))
+            trap_wrap.columnconfigure(0, weight=1)
+            trap_wrap.rowconfigure(0, weight=1)
             trap_tree = ttk.Treeview(
-                right,
+                trap_wrap,
                 columns=("trap", "mode", "mean", "details"),
                 show="headings",
                 height=14,
@@ -479,7 +505,10 @@ class SimTab:
                 trap_tree,
                 {"trap": "str", "mode": "str", "mean": "num", "details": "str"},
             )
-            trap_tree.pack(fill="both", expand=True, pady=(8, 0))
+            trap_tree.grid(row=0, column=0, sticky="nsew")
+            trap_scroll = ttk.Scrollbar(trap_wrap, orient="vertical", command=trap_tree.yview)
+            trap_scroll.grid(row=0, column=1, sticky="ns")
+            trap_tree.configure(yscrollcommand=trap_scroll.set)
 
             self.hand_trees[variant.name] = hand_tree
             self.trap_trees[variant.name] = trap_tree
