@@ -2,14 +2,61 @@ from __future__ import annotations
 
 # region Imports
 import math
+import os
 import random
 import time
+from collections import OrderedDict
+from threading import Lock
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from concurrent.futures import ProcessPoolExecutor
 
-from .simulation.engine import simulate_opening_stats, SimulationContext
+from .simulation.engine import simulate_opening_stats, SimulationContext, AbortSimulation
+# endregion
+
+
+# region Simulation cache (RAM)
+_SIM_CACHE_MB = int(os.getenv("DECKTOOL_SIM_CACHE_MB", "16384") or 0)
+
+
+class _SimulationCache:
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max(0, int(max_bytes))
+        self._bytes = 0
+        self._data: OrderedDict[Any, Tuple[Any, int]] = OrderedDict()
+        self._lock = Lock()
+
+    def get(self, key: Any) -> Optional[Any]:
+        if self.max_bytes <= 0:
+            return None
+        with self._lock:
+            item = self._data.get(key)
+            if item is None:
+                return None
+            self._data.move_to_end(key)
+            return item[0]
+
+    def put(self, key: Any, value: Any, est_bytes: int) -> None:
+        if self.max_bytes <= 0:
+            return
+        with self._lock:
+            if key in self._data:
+                _old_val, old_size = self._data.pop(key)
+                self._bytes -= old_size
+            self._data[key] = (value, int(est_bytes))
+            self._bytes += int(est_bytes)
+            while self._bytes > self.max_bytes and self._data:
+                _k, (_v, size) = self._data.popitem(last=False)
+                self._bytes -= size
+
+
+def _estimate_entry_bytes(counts_len: int) -> int:
+    # Rough estimate: card tuple + small payload. Conservative on purpose.
+    return 256 + (counts_len * 64)
+
+
+_SIM_CACHE = _SimulationCache(_SIM_CACHE_MB * 1024 * 1024)
 # endregion
 
 
@@ -44,6 +91,25 @@ class OptimizationProgress:
     eval_text: str
     detail_text: str
     eta_text: str
+    best_counts: Optional[Dict[str, int]] = None
+    best_deckcount: Optional[int] = None
+    best_prob: Optional[float] = None
+    best_tag_score: Optional[float] = None
+    best_trap_mean: Optional[float] = None
+    best_dup_prob: Optional[float] = None
+    base_counts: Optional[Dict[str, int]] = None
+    base_deckcount: Optional[int] = None
+    base_prob: Optional[float] = None
+    base_tag_score: Optional[float] = None
+    base_trap_mean: Optional[float] = None
+    base_dup_prob: Optional[float] = None
+    locked_cards: Optional[List[str]] = None
+    prob_threshold: Optional[float] = None
+    priority_order: Optional[List[str]] = None
+    mode: Optional[str] = None
+    variant_id: Optional[str] = None
+    is_preemptive: bool = False
+    is_breakthrough: bool = False
 
 
 @dataclass
@@ -373,6 +439,7 @@ class OptimizerRunner:
         self.card_meta = card_meta
         self.all_cards = all_cards
         self.executor = executor
+        self._context_fingerprint = getattr(sim_context, "fingerprint", "")
 
         self._card_tags = {c: (card_meta.get(c, {}) or {}).get("tags", []) for c in all_cards}
         self._cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], ScoreResult] = {}
@@ -385,6 +452,7 @@ class OptimizerRunner:
             self._bench_cards = set(self.bench_limits.keys())
             state.bench_limits = dict(self.bench_limits)
             self.state = state
+            self._base_tag_score = self._tag_priority_score(state.base_counts, state.base_deckcount)
         else:
             self._bench_cards = set(self.bench_limits.keys())
             base_score = self._score(base_counts, base_deckcount)
@@ -420,6 +488,7 @@ class OptimizerRunner:
                 stagnation_steps=0,
                 last_detail="",
             )
+            self._base_tag_score = self._tag_priority_score(base_counts, base_deckcount)
 
     def _format_move_line(self, move: Optional[Tuple[str, int]], display_override: Optional[str] = None) -> str:
         if display_override:
@@ -476,34 +545,64 @@ class OptimizerRunner:
         return (score / active) * weight_factor
 
     def _score(self, counts: Dict[str, int], deckcount: int) -> ScoreResult:
-        key = (tuple(sorted(counts.items())), int(deckcount))
+        counts_key = tuple(sorted((c, int(q)) for c, q in counts.items() if int(q) != 0))
+        key = (counts_key, int(deckcount))
         if key in self._cache:
             return self._cache[key]
-        report = simulate_opening_stats(
-            decklist={c: counts.get(c, 0) for c in self.all_cards},
-            ideal_hands=self.ideal_hands,
-            handtrap_effects=self.handtrap_effects,
-            deckcount=deckcount,
-            num_hands=self.settings.sims_per_step,
-            goingfirst=self.settings.goingfirst,
-            fill_blanks=True,
-            chunk_size=max(1_000, min(50_000, self.settings.sims_per_step // 20)),
-            executor=self.executor,
-            dup_penalty_weight=self.settings.dup_penalty_weight,
-            context=self.sim_context,
+        if getattr(self, "_abort_cb", None) and self._abort_cb():
+            raise AbortSimulation()
+        sim_key = (
+            self._context_fingerprint,
+            int(self.settings.sims_per_step),
+            bool(self.settings.goingfirst),
+            float(self.settings.dup_penalty_weight),
+            int(deckcount),
+            counts_key,
         )
-        if self.settings.dup_penalty_weight > 0:
-            prob = float(report["opening_probability_any_ideal_hand_penalized"])
+        cached = _SIM_CACHE.get(sim_key)
+        if cached is None:
+            max_workers = 1
+            if self.executor is not None:
+                max_workers = int(getattr(self.executor, "_max_workers", 1) or 1)
+            else:
+                max_workers = max(1, os.cpu_count() or 1)
+            target_chunks = max(1, max_workers * 4)
+            chunk_size = max(1_000, min(200_000, int(self.settings.sims_per_step / target_chunks)))
+
+            report = simulate_opening_stats(
+                decklist=counts,
+                ideal_hands=self.ideal_hands,
+                handtrap_effects=self.handtrap_effects,
+                deckcount=deckcount,
+                num_hands=self.settings.sims_per_step,
+                goingfirst=self.settings.goingfirst,
+                fill_blanks=True,
+                chunk_size=chunk_size,
+                executor=self.executor,
+                dup_penalty_weight=self.settings.dup_penalty_weight,
+                context=self.sim_context,
+                known_cards=self.all_cards,
+                should_abort=getattr(self, "_abort_cb", None),
+            )
+            prob_raw = float(report["opening_probability_any_ideal_hand"])
+            prob_pen = float(report.get("opening_probability_any_ideal_hand_penalized", prob_raw))
+            trap_stats = report.get("trap_stats", {}) or {}
+            if trap_stats:
+                means = [float(v.get("mean", 0.0)) for v in trap_stats.values() if v is not None]
+                trap_mean = sum(means) / len(means) if means else 0.0
+            else:
+                trap_mean = 0.0
+            _SIM_CACHE.put(sim_key, (prob_raw, prob_pen, trap_mean), _estimate_entry_bytes(len(counts_key)))
         else:
-            prob = float(report["opening_probability_any_ideal_hand"])
+            prob_raw, prob_pen, trap_mean = cached
+
+        # If a threshold is set, use raw probability to reach the cap; otherwise use penalized.
+        if self.settings.prob_threshold > 0:
+            prob = prob_raw
+        else:
+            prob = prob_pen if self.settings.dup_penalty_weight > 0 else prob_raw
         tag_score = self._tag_priority_score(counts, deckcount)
-        trap_stats = report.get("trap_stats", {}) or {}
-        if trap_stats:
-            means = [float(v.get("mean", 0.0)) for v in trap_stats.values() if v is not None]
-            trap_mean = sum(means) / len(means) if means else 0.0
-        else:
-            trap_mean = 0.0
-        dup_prob = float(report.get("opening_probability_any_ideal_hand_penalized", prob))
+        dup_prob = prob_pen if self.settings.dup_penalty_weight > 0 else prob_raw
         result = ScoreResult(prob=prob, tag_score=tag_score, trap_mean=trap_mean, dup_prob=dup_prob)
         self._cache[key] = result
         return result
@@ -660,8 +759,15 @@ class OptimizerRunner:
         state = self.state
         explore_budget = max(10, self.settings.max_steps // 5)
         last_ui_ts = 0.0
+        self._abort_cb = should_abort
 
-        def emit_progress(step_idx: int, eval_done: int, eval_total: int, detail: str) -> None:
+        def emit_progress(
+            step_idx: int,
+            eval_done: int,
+            eval_total: int,
+            detail: str,
+            snapshot: Optional[Dict[str, Any]] = None,
+        ) -> None:
             nonlocal last_ui_ts
             now = time.monotonic()
             if now - last_ui_ts < 0.05 and eval_done < eval_total:
@@ -682,6 +788,22 @@ class OptimizerRunner:
             if eval_total > 0:
                 eval_text = f"Evaluating… {eval_done}/{eval_total}"
 
+            base_snapshot = {
+                "best_prob": float(state.best_prob),
+                "best_tag_score": float(state.best_tag_score),
+                "best_trap_mean": float(state.best_trap_mean),
+                "best_dup_prob": float(state.best_dup_prob),
+                "base_prob": float(state.base_prob),
+                "base_tag_score": float(getattr(state, "base_tag_score", self._base_tag_score)),
+                "base_trap_mean": float(state.base_trap_mean),
+                "base_dup_prob": float(state.base_dup_prob),
+                "prob_threshold": float(self.settings.prob_threshold),
+                "priority_order": list(self.settings.priority_order or []),
+                "mode": "local",
+                "variant_id": str(self.variant_id),
+            }
+            if snapshot:
+                base_snapshot.update(snapshot)
             progress_cb(
                 OptimizationProgress(
                     step_index=step_idx,
@@ -692,152 +814,151 @@ class OptimizerRunner:
                     eval_text=eval_text,
                     detail_text=detail,
                     eta_text=eta,
+                    **base_snapshot,
                 )
             )
 
-        for step in range(state.step_index, self.settings.max_steps):
-            if should_abort():
-                return OptimizationResult("aborted", state)
-            if should_pause():
-                state.step_index = step
-                return OptimizationResult("paused", state)
+        try:
+            for step in range(state.step_index, self.settings.max_steps):
+                if should_abort():
+                    return OptimizationResult("aborted", state)
+                if should_pause():
+                    state.step_index = step
+                    return OptimizationResult("paused", state)
 
-            step_start = time.monotonic()
-            prev_best_prob = state.best_prob
-            eval_done = 0
-            eval_total = 0
-            emit_progress(step, eval_done, eval_total, state.last_detail)
+                step_start = time.monotonic()
+                prev_best_prob = state.best_prob
+                prev_best_score = self._best_score(state)
+                eval_done = 0
+                eval_total = 0
+                emit_progress(step, eval_done, eval_total, state.last_detail)
 
-            # Momentum: try same move again
-            if state.last_move is not None:
-                card, delta = state.last_move
-                cand = self._apply_move(state.current_counts, state.current_deckcount, card, delta)
-                if cand is not None:
-                    cand_counts, cand_deckcount = cand
-                    prev_prob = state.current_prob
-                    score = self._score(cand_counts, cand_deckcount)
-                    if self._better_or_equal(score, self._current_score(state)):
-                        state.current_counts = cand_counts
-                        state.current_deckcount = cand_deckcount
-                        state.current_prob = score.prob
-                        state.current_tag_score = score.tag_score
-                        state.current_trap_mean = score.trap_mean
-                        state.current_dup_prob = score.dup_prob
-                        if self._better(self._current_score(state), self._best_score(state)):
-                            state.best_counts = dict(state.current_counts)
-                            state.best_deckcount = int(state.current_deckcount)
-                            state.best_prob = state.current_prob
-                            state.best_tag_score = state.current_tag_score
-                            state.best_trap_mean = state.current_trap_mean
-                            state.best_dup_prob = state.current_dup_prob
-                        state.last_detail = self._detail_lines(state.last_move, state.current_prob, prev_prob)
-                        emit_progress(step, eval_done, eval_total, state.last_detail)
+                # Momentum: try same move again
+                if state.last_move is not None:
+                    card, delta = state.last_move
+                    cand = self._apply_move(state.current_counts, state.current_deckcount, card, delta)
+                    if cand is not None:
+                        cand_counts, cand_deckcount = cand
+                        prev_prob = state.current_prob
+                        score = self._score(cand_counts, cand_deckcount)
+                        if self._better_or_equal(score, self._current_score(state)):
+                            state.current_counts = cand_counts
+                            state.current_deckcount = cand_deckcount
+                            state.current_prob = score.prob
+                            state.current_tag_score = score.tag_score
+                            state.current_trap_mean = score.trap_mean
+                            state.current_dup_prob = score.dup_prob
+                            if self._better(self._current_score(state), self._best_score(state)):
+                                state.best_counts = dict(state.current_counts)
+                                state.best_deckcount = int(state.current_deckcount)
+                                state.best_prob = state.current_prob
+                                state.best_tag_score = state.current_tag_score
+                                state.best_trap_mean = state.current_trap_mean
+                                state.best_dup_prob = state.current_dup_prob
+                            state.last_detail = self._detail_lines(state.last_move, state.current_prob, prev_prob)
+                            emit_progress(step, eval_done, eval_total, state.last_detail)
+                        else:
+                            state.last_move = None
                     else:
                         state.last_move = None
-                else:
-                    state.last_move = None
 
-            best_cand: Optional[Dict[str, int]] = None
-            best_cand_deckcount: Optional[int] = None
-            best_cand_score: Optional[ScoreResult] = None
-            best_move: Optional[Tuple[str, int]] = None
+                best_cand: Optional[Dict[str, int]] = None
+                best_cand_deckcount: Optional[int] = None
+                best_cand_score: Optional[ScoreResult] = None
+                best_move: Optional[Tuple[str, int]] = None
 
-            def consider_candidate(cand: Optional[Tuple[Dict[str, int], int]], move: Optional[Tuple[str, int]], display_override: Optional[str] = None) -> None:
-                nonlocal best_cand, best_cand_deckcount, best_cand_score, best_move, eval_done
-                if cand is None:
-                    return
-                if should_abort() or should_pause():
-                    return
-                eval_done += 1
-                cand_counts, cand_deckcount = cand
-                score = self._score(cand_counts, cand_deckcount)
-                detail = self._detail_lines(move, score.prob, state.current_prob, display_override)
-                state.last_detail = detail
-                emit_progress(step, eval_done, eval_total, detail)
-                if best_cand_score is None or self._better(score, best_cand_score):
-                    best_cand_score = score
-                    best_cand = cand_counts
-                    best_cand_deckcount = cand_deckcount
-                    best_move = move
+                def consider_candidate(
+                    cand: Optional[Tuple[Dict[str, int], int]],
+                    move: Optional[Tuple[str, int]],
+                    display_override: Optional[str] = None,
+                ) -> None:
+                    nonlocal best_cand, best_cand_deckcount, best_cand_score, best_move, eval_done
+                    if cand is None:
+                        return
+                    if should_abort() or should_pause():
+                        return
+                    eval_done += 1
+                    cand_counts, cand_deckcount = cand
+                    score = self._score(cand_counts, cand_deckcount)
+                    detail = self._detail_lines(move, score.prob, state.current_prob, display_override)
+                    state.last_detail = detail
+                    emit_progress(step, eval_done, eval_total, detail)
+                    if best_cand_score is None or self._better(score, best_cand_score):
+                        best_cand_score = score
+                        best_cand = cand_counts
+                        best_cand_deckcount = cand_deckcount
+                        best_move = move
 
-            total = sum(state.current_counts.values())
-            single_moves: List[Tuple[str, int]] = []
-            if total < self.settings.deck_max:
+                total = sum(state.current_counts.values())
+                single_moves: List[Tuple[str, int]] = []
+                if total < self.settings.deck_max:
+                    for card in self._candidate_cards():
+                        _min_v, max_v = self._min_max(card)
+                        if state.current_counts.get(card, 0) < max_v:
+                            single_moves.append((card, +1))
                 for card in self._candidate_cards():
-                    _min_v, max_v = self._min_max(card)
-                    if state.current_counts.get(card, 0) < max_v:
-                        single_moves.append((card, +1))
-            for card in self._candidate_cards():
-                min_v, _max_v = self._min_max(card)
-                if state.current_counts.get(card, 0) > min_v:
-                    single_moves.append((card, -1))
+                    min_v, _max_v = self._min_max(card)
+                    if state.current_counts.get(card, 0) > min_v:
+                        single_moves.append((card, -1))
 
-            if state.current_deckcount < self.settings.deck_max:
-                single_moves.append(("__deckcount__", +1))
-            min_deckcount = max(self.settings.deck_min, total)
-            if state.current_deckcount > min_deckcount:
-                single_moves.append(("__deckcount__", -1))
+                if state.current_deckcount < self.settings.deck_max:
+                    single_moves.append(("__deckcount__", +1))
+                min_deckcount = max(self.settings.deck_min, total)
+                if state.current_deckcount > min_deckcount:
+                    single_moves.append(("__deckcount__", -1))
 
-            inc_cards = [c for c in self._candidate_cards() if state.current_counts.get(c, 0) < self._min_max(c)[1]]
-            dec_cards = [c for c in self._candidate_cards() if state.current_counts.get(c, 0) > self._min_max(c)[0]]
+                inc_cards = [
+                    c for c in self._candidate_cards()
+                    if state.current_counts.get(c, 0) < self._min_max(c)[1]
+                ]
+                dec_cards = [
+                    c for c in self._candidate_cards()
+                    if state.current_counts.get(c, 0) > self._min_max(c)[0]
+                ]
 
-            if not self.settings.deep_search:
-                inc_cards = sorted(inc_cards, key=lambda c: (self.constraints[c][1] - state.current_counts.get(c, 0)), reverse=True)[:6]
-                dec_cards = sorted(dec_cards, key=lambda c: (state.current_counts.get(c, 0) - self.constraints[c][0]), reverse=True)[:6]
-            swap_pairs = [(inc, dec) for inc in inc_cards for dec in dec_cards if inc != dec]
+                if not self.settings.deep_search:
+                    inc_cards = sorted(
+                        inc_cards,
+                        key=lambda c: (self.constraints[c][1] - state.current_counts.get(c, 0)),
+                        reverse=True,
+                    )[:6]
+                    dec_cards = sorted(
+                        dec_cards,
+                        key=lambda c: (state.current_counts.get(c, 0) - self.constraints[c][0]),
+                        reverse=True,
+                    )[:6]
+                swap_pairs = [(inc, dec) for inc in inc_cards for dec in dec_cards if inc != dec]
 
-            eval_total = len(single_moves) + len(swap_pairs)
-            emit_progress(step, eval_done, eval_total, state.last_detail)
+                eval_total = len(single_moves) + len(swap_pairs)
+                emit_progress(step, eval_done, eval_total, state.last_detail)
 
-            for card, delta in single_moves:
-                if should_abort() or should_pause():
+                for card, delta in single_moves:
+                    if should_abort() or should_pause():
+                        break
+                    consider_candidate(self._apply_move(state.current_counts, state.current_deckcount, card, delta), (card, delta))
+
+                for inc, dec in swap_pairs:
+                    if should_abort() or should_pause():
+                        break
+                    cand = dict(state.current_counts)
+                    cand[inc] = cand.get(inc, 0) + 1
+                    cand[dec] = cand.get(dec, 0) - 1
+                    if cand[dec] < self._min_max(dec)[0] or cand[inc] > self._min_max(inc)[1]:
+                        continue
+                    if sum(cand.values()) > state.current_deckcount:
+                        continue
+                    consider_candidate((cand, state.current_deckcount), None, display_override=f"+1 {inc} / -1 {dec}")
+
+                if should_abort():
+                    return OptimizationResult("aborted", state)
+                if should_pause():
+                    state.step_index = step
+                    return OptimizationResult("paused", state)
+
+                if best_cand is None or best_cand_score is None or best_cand_deckcount is None:
                     break
-                consider_candidate(self._apply_move(state.current_counts, state.current_deckcount, card, delta), (card, delta))
-
-            for inc, dec in swap_pairs:
-                if should_abort() or should_pause():
-                    break
-                cand = dict(state.current_counts)
-                cand[inc] = cand.get(inc, 0) + 1
-                cand[dec] = cand.get(dec, 0) - 1
-                if cand[dec] < self._min_max(dec)[0] or cand[inc] > self._min_max(inc)[1]:
-                    continue
-                if sum(cand.values()) > state.current_deckcount:
-                    continue
-                consider_candidate((cand, state.current_deckcount), None, display_override=f"+1 {inc} / -1 {dec}")
-
-            if should_abort():
-                return OptimizationResult("aborted", state)
-            if should_pause():
-                state.step_index = step
-                return OptimizationResult("paused", state)
-
-            if best_cand is None or best_cand_score is None or best_cand_deckcount is None:
-                break
-            current_score = self._current_score(state)
-            if self._better_or_equal(best_cand_score, current_score):
-                prev_prob = state.current_prob
-                state.current_counts = best_cand
-                state.current_deckcount = best_cand_deckcount
-                state.current_prob = best_cand_score.prob
-                state.current_tag_score = best_cand_score.tag_score
-                state.current_trap_mean = best_cand_score.trap_mean
-                state.current_dup_prob = best_cand_score.dup_prob
-                state.last_move = best_move
-                state.explore_steps_left = explore_budget
-                state.last_detail = self._detail_lines(best_move, state.current_prob, prev_prob)
-                if self._better(self._current_score(state), self._best_score(state)):
-                    state.best_counts = dict(state.current_counts)
-                    state.best_deckcount = int(state.current_deckcount)
-                    state.best_prob = state.current_prob
-                    state.best_tag_score = state.current_tag_score
-                    state.best_trap_mean = state.current_trap_mean
-                    state.best_dup_prob = state.current_dup_prob
-            else:
-                allow_explore = True
-                if self.settings.prob_threshold > 0 and self._meets_threshold(current_score):
-                    allow_explore = self._meets_threshold(best_cand_score)
-                if state.explore_steps_left > 0 and allow_explore:
+                current_score = self._current_score(state)
+                if self._better_or_equal(best_cand_score, current_score):
                     prev_prob = state.current_prob
                     state.current_counts = best_cand
                     state.current_deckcount = best_cand_deckcount
@@ -846,35 +967,70 @@ class OptimizerRunner:
                     state.current_trap_mean = best_cand_score.trap_mean
                     state.current_dup_prob = best_cand_score.dup_prob
                     state.last_move = best_move
-                    state.explore_steps_left -= 1
-                    state.last_detail = self._detail_lines(best_move, state.current_prob, prev_prob)
-                else:
-                    state.current_counts = dict(state.best_counts)
-                    state.current_deckcount = int(state.best_deckcount)
-                    state.current_prob = state.best_prob
-                    state.current_tag_score = state.best_tag_score
-                    state.current_trap_mean = state.best_trap_mean
-                    state.current_dup_prob = state.best_dup_prob
-                    state.last_move = None
                     state.explore_steps_left = explore_budget
-                    state.last_detail = ""
+                    state.last_detail = self._detail_lines(best_move, state.current_prob, prev_prob)
+                    if self._better(self._current_score(state), self._best_score(state)):
+                        state.best_counts = dict(state.current_counts)
+                        state.best_deckcount = int(state.current_deckcount)
+                        state.best_prob = state.current_prob
+                        state.best_tag_score = state.current_tag_score
+                        state.best_trap_mean = state.current_trap_mean
+                        state.best_dup_prob = state.current_dup_prob
+                else:
+                    allow_explore = True
+                    if self.settings.prob_threshold > 0 and self._meets_threshold(current_score):
+                        allow_explore = self._meets_threshold(best_cand_score)
+                    if state.explore_steps_left > 0 and allow_explore:
+                        prev_prob = state.current_prob
+                        state.current_counts = best_cand
+                        state.current_deckcount = best_cand_deckcount
+                        state.current_prob = best_cand_score.prob
+                        state.current_tag_score = best_cand_score.tag_score
+                        state.current_trap_mean = best_cand_score.trap_mean
+                        state.current_dup_prob = best_cand_score.dup_prob
+                        state.last_move = best_move
+                        state.explore_steps_left -= 1
+                        state.last_detail = self._detail_lines(best_move, state.current_prob, prev_prob)
+                    else:
+                        state.current_counts = dict(state.best_counts)
+                        state.current_deckcount = int(state.best_deckcount)
+                        state.current_prob = state.best_prob
+                        state.current_tag_score = state.best_tag_score
+                        state.current_trap_mean = state.best_trap_mean
+                        state.current_dup_prob = state.best_dup_prob
+                        state.last_move = None
+                        state.explore_steps_left = explore_budget
+                        state.last_detail = ""
 
-            if state.best_prob > prev_best_prob + self._prob_eps(state.best_prob, prev_best_prob):
-                state.stagnation_steps = 0
-            else:
-                state.stagnation_steps += 1
-            if not state.bench_unlocked and self.bench_limits and state.stagnation_steps >= self._bench_patience:
-                state.bench_unlocked = True
-                state.last_detail = "Bench unlocked"
+                if state.best_prob > prev_best_prob + self._prob_eps(state.best_prob, prev_best_prob):
+                    state.stagnation_steps = 0
+                else:
+                    state.stagnation_steps += 1
+                if not state.bench_unlocked and self.bench_limits and state.stagnation_steps >= self._bench_patience:
+                    state.bench_unlocked = True
+                    state.last_detail = "Bench unlocked"
 
-            state.step_index = step + 1
-            step_elapsed = max(0.0, time.monotonic() - step_start)
-            state.step_times.append(step_elapsed)
-            if len(state.step_times) > 40:
-                state.step_times = state.step_times[-40:]
-            emit_progress(step + 1, 0, 0, state.last_detail)
+                state.step_index = step + 1
+                step_elapsed = max(0.0, time.monotonic() - step_start)
+                state.step_times.append(step_elapsed)
+                if len(state.step_times) > 40:
+                    state.step_times = state.step_times[-40:]
+                best_updated = self._better(self._best_score(state), prev_best_score)
+                snapshot = None
+                if best_updated:
+                    snapshot = {
+                        "best_counts": dict(state.best_counts),
+                        "best_deckcount": int(state.best_deckcount),
+                        "locked_cards": list(state.locked_cards),
+                        "is_breakthrough": True,
+                    }
+                emit_progress(step + 1, 0, 0, state.last_detail, snapshot=snapshot)
 
-        return OptimizationResult("done", state)
+            return OptimizationResult("done", state)
+        except AbortSimulation:
+            return OptimizationResult("aborted", state)
+        finally:
+            self._abort_cb = None
 # endregion
 
 
@@ -915,6 +1071,7 @@ class EvolutionRunner:
         self.card_meta = card_meta
         self.all_cards = all_cards
         self.executor = executor
+        self._context_fingerprint = getattr(sim_context, "fingerprint", "")
 
         self._card_tags = {c: (card_meta.get(c, {}) or {}).get("tags", []) for c in all_cards}
         self._cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], ScoreResult] = {}
@@ -1055,34 +1212,64 @@ class EvolutionRunner:
         return (score / active) * weight_factor
 
     def _score(self, counts: Dict[str, int], deckcount: int) -> ScoreResult:
-        key = (tuple(sorted(counts.items())), int(deckcount))
+        counts_key = tuple(sorted((c, int(q)) for c, q in counts.items() if int(q) != 0))
+        key = (counts_key, int(deckcount))
         if key in self._cache:
             return self._cache[key]
-        report = simulate_opening_stats(
-            decklist={c: counts.get(c, 0) for c in self.all_cards},
-            ideal_hands=self.ideal_hands,
-            handtrap_effects=self.handtrap_effects,
-            deckcount=deckcount,
-            num_hands=self.settings.sims_per_step,
-            goingfirst=self.settings.goingfirst,
-            fill_blanks=True,
-            chunk_size=max(1_000, min(50_000, self.settings.sims_per_step // 20)),
-            executor=self.executor,
-            dup_penalty_weight=self.settings.dup_penalty_weight,
-            context=self.sim_context,
+        if getattr(self, "_abort_cb", None) and self._abort_cb():
+            raise AbortSimulation()
+        sim_key = (
+            self._context_fingerprint,
+            int(self.settings.sims_per_step),
+            bool(self.settings.goingfirst),
+            float(self.settings.dup_penalty_weight),
+            int(deckcount),
+            counts_key,
         )
-        if self.settings.dup_penalty_weight > 0:
-            prob = float(report["opening_probability_any_ideal_hand_penalized"])
+        cached = _SIM_CACHE.get(sim_key)
+        if cached is None:
+            max_workers = 1
+            if self.executor is not None:
+                max_workers = int(getattr(self.executor, "_max_workers", 1) or 1)
+            else:
+                max_workers = max(1, os.cpu_count() or 1)
+            target_chunks = max(1, max_workers * 4)
+            chunk_size = max(1_000, min(200_000, int(self.settings.sims_per_step / target_chunks)))
+
+            report = simulate_opening_stats(
+                decklist=counts,
+                ideal_hands=self.ideal_hands,
+                handtrap_effects=self.handtrap_effects,
+                deckcount=deckcount,
+                num_hands=self.settings.sims_per_step,
+                goingfirst=self.settings.goingfirst,
+                fill_blanks=True,
+                chunk_size=chunk_size,
+                executor=self.executor,
+                dup_penalty_weight=self.settings.dup_penalty_weight,
+                context=self.sim_context,
+                known_cards=self.all_cards,
+                should_abort=getattr(self, "_abort_cb", None),
+            )
+            prob_raw = float(report["opening_probability_any_ideal_hand"])
+            prob_pen = float(report.get("opening_probability_any_ideal_hand_penalized", prob_raw))
+            trap_stats = report.get("trap_stats", {}) or {}
+            if trap_stats:
+                means = [float(v.get("mean", 0.0)) for v in trap_stats.values() if v is not None]
+                trap_mean = sum(means) / len(means) if means else 0.0
+            else:
+                trap_mean = 0.0
+            _SIM_CACHE.put(sim_key, (prob_raw, prob_pen, trap_mean), _estimate_entry_bytes(len(counts_key)))
         else:
-            prob = float(report["opening_probability_any_ideal_hand"])
+            prob_raw, prob_pen, trap_mean = cached
+
+        # If a threshold is set, use raw probability to reach the cap; otherwise use penalized.
+        if self.settings.prob_threshold > 0:
+            prob = prob_raw
+        else:
+            prob = prob_pen if self.settings.dup_penalty_weight > 0 else prob_raw
         tag_score = self._tag_priority_score(counts, deckcount)
-        trap_stats = report.get("trap_stats", {}) or {}
-        if trap_stats:
-            means = [float(v.get("mean", 0.0)) for v in trap_stats.values() if v is not None]
-            trap_mean = sum(means) / len(means) if means else 0.0
-        else:
-            trap_mean = 0.0
-        dup_prob = float(report.get("opening_probability_any_ideal_hand_penalized", prob))
+        dup_prob = prob_pen if self.settings.dup_penalty_weight > 0 else prob_raw
         result = ScoreResult(prob=prob, tag_score=tag_score, trap_mean=trap_mean, dup_prob=dup_prob)
         self._cache[key] = result
         return result
@@ -1259,8 +1446,15 @@ class EvolutionRunner:
     ) -> OptimizationResult:
         state = self.state
         last_ui_ts = 0.0
+        self._abort_cb = should_abort
 
-        def emit_progress(gen_idx: int, eval_done: int, eval_total: int, detail: str) -> None:
+        def emit_progress(
+            gen_idx: int,
+            eval_done: int,
+            eval_total: int,
+            detail: str,
+            snapshot: Optional[Dict[str, Any]] = None,
+        ) -> None:
             nonlocal last_ui_ts
             now = time.monotonic()
             if now - last_ui_ts < 0.05 and eval_done < eval_total:
@@ -1281,6 +1475,22 @@ class EvolutionRunner:
             if eval_total > 0:
                 eval_text = f"Evaluating… {eval_done}/{eval_total}"
 
+            base_snapshot = {
+                "best_prob": float(state.best_prob),
+                "best_tag_score": float(state.best_tag_score),
+                "best_trap_mean": float(state.best_trap_mean),
+                "best_dup_prob": float(state.best_dup_prob),
+                "base_prob": float(state.base_prob),
+                "base_tag_score": float(state.base_tag_score),
+                "base_trap_mean": float(state.base_trap_mean),
+                "base_dup_prob": float(state.base_dup_prob),
+                "prob_threshold": float(self.settings.prob_threshold),
+                "priority_order": list(self.settings.priority_order or []),
+                "mode": "evolution",
+                "variant_id": str(self.variant_id),
+            }
+            if snapshot:
+                base_snapshot.update(snapshot)
             progress_cb(
                 OptimizationProgress(
                     step_index=gen_idx,
@@ -1291,6 +1501,7 @@ class EvolutionRunner:
                     eval_text=eval_text,
                     detail_text=detail,
                     eta_text=eta,
+                    **base_snapshot,
                 )
             )
 
@@ -1303,6 +1514,12 @@ class EvolutionRunner:
 
             gen_start = time.monotonic()
             prev_best_prob = state.best_prob
+            prev_best_score = ScoreResult(
+                state.best_prob,
+                state.best_tag_score,
+                state.best_trap_mean,
+                state.best_dup_prob,
+            )
             population = state.population
             eval_total = len(population)
             eval_done = 0
@@ -1316,7 +1533,12 @@ class EvolutionRunner:
                     return OptimizationResult("paused", state) if should_pause() else OptimizationResult("aborted", state)
                 counts = dict(ind.get("counts", {}))
                 deckcount = int(ind.get("deckcount", 0))
-                score = self._score(counts, deckcount)
+                try:
+                    score = self._score(counts, deckcount)
+                except AbortSimulation:
+                    state.generation = gen
+                    state.population = population
+                    return OptimizationResult("aborted", state)
                 evaluated.append({"counts": counts, "deckcount": deckcount, "score": score})
                 eval_done += 1
                 state.last_detail = f"Best so far: {state.best_prob:.4%}"
@@ -1332,6 +1554,7 @@ class EvolutionRunner:
 
             evaluated.sort(key=sort_key, reverse=True)
             best = evaluated[0]
+            best_updated = False
             if self._better(best["score"], ScoreResult(state.best_prob, state.best_tag_score, state.best_trap_mean, state.best_dup_prob)):
                 state.best_counts = dict(best["counts"])
                 state.best_deckcount = int(best["deckcount"])
@@ -1339,9 +1562,31 @@ class EvolutionRunner:
                 state.best_tag_score = float(best["score"].tag_score)
                 state.best_trap_mean = float(best["score"].trap_mean)
                 state.best_dup_prob = float(best["score"].dup_prob)
+                best_updated = True
 
             state.last_detail = f"Gen {gen + 1}: best {state.best_prob:.4%}"
-            emit_progress(gen, eval_done, eval_total, state.last_detail)
+            if not best_updated:
+                best_updated = self._better(
+                    ScoreResult(state.best_prob, state.best_tag_score, state.best_trap_mean, state.best_dup_prob),
+                    prev_best_score,
+                )
+            emit_progress(
+                gen,
+                eval_done,
+                eval_total,
+                state.last_detail,
+                snapshot={
+                    "best_counts": dict(state.best_counts),
+                    "best_deckcount": int(state.best_deckcount),
+                    "best_prob": float(state.best_prob),
+                    "base_counts": dict(state.base_counts),
+                    "base_deckcount": int(state.base_deckcount),
+                    "base_prob": float(state.base_prob),
+                    "locked_cards": list(state.locked_cards),
+                    "is_preemptive": True,
+                    "is_breakthrough": bool(best_updated),
+                },
+            )
 
             pop_size = max(10, int(self.settings.evo_population))
             elite = max(1, min(int(self.settings.evo_elite), pop_size))

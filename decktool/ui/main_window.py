@@ -16,6 +16,7 @@ from .tabs.deck import DeckTab
 from .tabs.hands import HandsTab
 from .tabs.traps import TrapsTab
 from .tabs.optimize import OptimizeTab
+from .tabs.insights import InsightsTab
 from .tabs.sim import SimTab
 # endregion
 
@@ -51,6 +52,7 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
         self.hands_tab = None
         self.traps_tab = None
         self.optimize_tab = None
+        self.insights_tab = None
         self.sim_tab = None
 
         self._ensure_default_deck()
@@ -63,12 +65,14 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
         self.hands_tab = HandsTab(self)
         self.traps_tab = TrapsTab(self)
         self.optimize_tab = OptimizeTab(self)
+        self.insights_tab = InsightsTab(self)
         self.sim_tab = SimTab(self)
 
         self.tabs.addTab(self.deck_tab, "Deck")
         self.tabs.addTab(self.hands_tab, "Ideal Hands")
         self.tabs.addTab(self.traps_tab, "Handtraps")
         self.tabs.addTab(self.optimize_tab, "Optimize")
+        self.tabs.addTab(self.insights_tab, "Insights")
         self.tabs.addTab(self.sim_tab, "Simulation")
 
         self.refresh_all()
@@ -213,6 +217,7 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
         self.hands_tab.refresh()
         self.traps_tab.refresh()
         self.optimize_tab.refresh()
+        self.insights_tab.refresh()
         self.sim_tab.refresh()
 
     def refresh_hand_dependent_views(self) -> None:

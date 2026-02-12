@@ -2,15 +2,21 @@ from __future__ import annotations
 
 # region Imports
 import os
+import json
+import hashlib
 import random
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Iterable
 
 from ..utils import is_hand_ref, hand_ref_id, is_tag_ref, tag_ref_name
 # endregion
+
+
+class AbortSimulation(Exception):
+    """Raised to abort an in-progress simulation early."""
 
 # region Constants
 # These are treated as "draw counts" instead of impact
@@ -31,6 +37,7 @@ class SimulationContext:
     handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]]
     trap_names: List[str]
     draw_traps: set[str]
+    fingerprint: str
 
 
 def build_simulation_context(
@@ -40,6 +47,17 @@ def build_simulation_context(
     card_meta: Optional[Dict[str, Any]] = None,
     trap_names: Optional[List[str]] = None,
 ) -> SimulationContext:
+    def _context_fingerprint() -> str:
+        payload = {
+            "ideal_hands": ideal_hands,
+            "handtrap_effects": handtrap_effects,
+            "trap_defs": trap_defs or {},
+            "card_meta": card_meta or {},
+            "trap_names": trap_names or [],
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
+
     draw_traps: set[str] = set()
     if trap_defs:
         if trap_names is None:
@@ -85,6 +103,7 @@ def build_simulation_context(
         handtrap_effects=handtrap_effects,
         trap_names=list(trap_names or []),
         draw_traps=draw_traps,
+        fingerprint=_context_fingerprint(),
     )
 # endregion
 
@@ -276,13 +295,20 @@ def _extract_hand_definition(h: Dict[str, Any]) -> Tuple[Dict[str, int], List[Li
     return must, []
 
 
-def _validate_ideal_hands_exist_in_deck(decklist: Dict[str, int], ideal_hands: List[Dict[str, Any]]) -> None:
+def _validate_ideal_hands_exist_in_deck(
+    decklist: Dict[str, int],
+    ideal_hands: List[Dict[str, Any]],
+    known_cards: Optional[Iterable[str]] = None,
+) -> None:
     """
     Validation rule:
     - OK if a deck card has count 0 (still exists as a key).
+    - OK if a card is in known_cards (e.g., bench/global pool).
     - Only error on truly unknown names (typos).
     """
     deck_cards = set(decklist.keys()) | {"__blank__"}
+    if known_cards:
+        deck_cards |= {str(c) for c in known_cards}
     unknown = set()
 
     hand_ids = {str(h.get("id", "")).strip() for h in ideal_hands}
@@ -728,6 +754,8 @@ def simulate_opening_stats(
     dup_penalty_weight: float = 0.0,
     track_tag_configs: bool = False,
     context: Optional[SimulationContext] = None,
+    known_cards: Optional[Iterable[str]] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Computes (best-line per opening hand):
@@ -744,9 +772,11 @@ def simulate_opening_stats(
     """
     if num_hands <= 0:
         raise ValueError("num_hands must be > 0")
+    if should_abort and should_abort():
+        raise AbortSimulation()
 
     # 1) Normalize and validate inputs.
-    _validate_ideal_hands_exist_in_deck(decklist, ideal_hands)
+    _validate_ideal_hands_exist_in_deck(decklist, ideal_hands, known_cards=known_cards)
     deck = _normalize_deck(decklist, deckcount=deckcount, fill_blanks=fill_blanks)
 
     hand_size = 5 if goingfirst else 6
@@ -802,7 +832,7 @@ def simulate_opening_stats(
     if progress_cb:
         progress_cb(0, total)
 
-    use_parallel = (executor is not None) or (num_workers > 1 and total > chunk_size)
+    use_parallel = ((executor is not None) and (total > chunk_size)) or (num_workers > 1 and total > chunk_size)
 
     if use_parallel:
         # Split total simulations into chunks for worker processes.
@@ -829,6 +859,7 @@ def simulate_opening_stats(
             ex = ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx)
             owns_executor = True
 
+        aborted = False
         try:
             futures = {}
             for idx, this_chunk in enumerate(chunks):
@@ -852,28 +883,38 @@ def simulate_opening_stats(
                 )
                 futures[fut] = this_chunk
 
-            for fut in as_completed(futures):
-                this_chunk = futures[fut]
-                h_prob, h_weighted, h_trap, h_by_hand, h_trap_hist, h_trap_sum, h_tag_cfg = fut.result()
-                hits_any_prob += int(h_prob)
-                hits_any_weighted += float(h_weighted)
-                hits_any_trap += int(h_trap)
-                hits_by_hand.update(h_by_hand)
-                for t, hist in h_trap_hist.items():
-                    trap_hist[t].update(hist)
-                trap_sum_all.update(h_trap_sum)
-                if track_tag_configs and tag_config_hist is not None:
-                    tag_config_hist.update(h_tag_cfg)
-                done += this_chunk
-                if progress_cb:
-                    progress_cb(done, total)
+            pending = set(futures.keys())
+            while pending:
+                if should_abort and should_abort():
+                    for fut in pending:
+                        fut.cancel()
+                    aborted = True
+                    raise AbortSimulation()
+                done_set, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                for fut in done_set:
+                    this_chunk = futures[fut]
+                    h_prob, h_weighted, h_trap, h_by_hand, h_trap_hist, h_trap_sum, h_tag_cfg = fut.result()
+                    hits_any_prob += int(h_prob)
+                    hits_any_weighted += float(h_weighted)
+                    hits_any_trap += int(h_trap)
+                    hits_by_hand.update(h_by_hand)
+                    for t, hist in h_trap_hist.items():
+                        trap_hist[t].update(hist)
+                    trap_sum_all.update(h_trap_sum)
+                    if track_tag_configs and tag_config_hist is not None:
+                        tag_config_hist.update(h_tag_cfg)
+                    done += this_chunk
+                    if progress_cb:
+                        progress_cb(done, total)
         finally:
             if owns_executor and ex is not None:
-                ex.shutdown(wait=True)
+                ex.shutdown(wait=not aborted, cancel_futures=aborted)
     else:
         # Single-process fallback (or when workload is too small).
         rnd = random.Random()
         while done < total:
+            if should_abort and should_abort():
+                raise AbortSimulation()
             this_chunk = min(chunk_size, total - done)
 
             for _ in range(this_chunk):

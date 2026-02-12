@@ -67,6 +67,7 @@ class SimulationWorker(QtCore.QObject):
                     progress_cb=progress,
                     track_tag_configs=True,
                     context=context,
+                    known_cards=all_cards,
                 )
                 reports.append({"variant": variant, "report": report})
                 done_offset += self.num

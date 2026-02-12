@@ -41,6 +41,7 @@ class OptimizationWorker(QtCore.QObject):
 
     def run(self) -> None:
         executor = None
+        result = None
         try:
             max_workers = max(1, os.cpu_count() or 1)
             if max_workers > 1:
@@ -54,7 +55,8 @@ class OptimizationWorker(QtCore.QObject):
             self.finished.emit(result)
         finally:
             if executor is not None:
-                executor.shutdown(wait=True)
+                aborted = bool(result and getattr(result, "status", "") == "aborted")
+                executor.shutdown(wait=not aborted, cancel_futures=aborted)
 
 
 class OptimizeTab(QtWidgets.QWidget):
@@ -135,6 +137,8 @@ class OptimizeTab(QtWidgets.QWidget):
         self._active_mode: str = "local"
         self._loaded_variant_id: Optional[str] = None
         self._loaded_cards: set[str] = set()
+        self._restoring_options = False
+        self._options_save_timer: Optional[QtCore.QTimer] = None
 
         self._build_ui()
 
@@ -166,16 +170,19 @@ class OptimizeTab(QtWidgets.QWidget):
         self.min_spin = QtWidgets.QSpinBox()
         self.min_spin.setRange(40, 60)
         self.min_spin.setValue(40)
+        self.min_spin.valueChanged.connect(self._schedule_options_save)
         row1.addWidget(self.min_spin)
         row1.addWidget(QtWidgets.QLabel("Max"))
         self.max_spin = QtWidgets.QSpinBox()
         self.max_spin.setRange(40, 60)
         self.max_spin.setValue(60)
+        self.max_spin.valueChanged.connect(self._schedule_options_save)
         row1.addWidget(self.max_spin)
 
         self.goingfirst_check = QtWidgets.QCheckBox("Going first (draw 5)")
         self.goingfirst_check.setChecked(True)
         self.goingfirst_check.toggled.connect(lambda _checked: self._refresh_tag_priorities())
+        self.goingfirst_check.toggled.connect(self._schedule_options_save)
         row1.addWidget(self.goingfirst_check)
         row1.addStretch(1)
         left.addLayout(row1)
@@ -187,6 +194,7 @@ class OptimizeTab(QtWidgets.QWidget):
         self.eval_spin.setRange(1_000, 5_000_000)
         self.eval_spin.setSingleStep(10_000)
         self.eval_spin.setValue(150_000)
+        self.eval_spin.valueChanged.connect(self._schedule_options_save)
         row2.addWidget(self.eval_spin)
         row2.addSpacing(10)
         self.max_steps_label = QtWidgets.QLabel("Max steps")
@@ -194,6 +202,7 @@ class OptimizeTab(QtWidgets.QWidget):
         self.max_steps_spin = QtWidgets.QSpinBox()
         self.max_steps_spin.setRange(1, 5_000)
         self.max_steps_spin.setValue(400)
+        self.max_steps_spin.valueChanged.connect(self._schedule_options_save)
         row2.addWidget(self.max_steps_spin)
         row2.addStretch(1)
         left.addLayout(row2)
@@ -203,10 +212,12 @@ class OptimizeTab(QtWidgets.QWidget):
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(["Local search", "Evolution"])
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        self.mode_combo.currentTextChanged.connect(self._schedule_options_save)
         row3.addWidget(self.mode_combo)
         row3.addSpacing(12)
         self.deep_check = QtWidgets.QCheckBox("Deep search (exhaustive neighbors)")
         self.deep_check.setChecked(True)
+        self.deep_check.toggled.connect(self._schedule_options_save)
         row3.addWidget(self.deep_check)
         row3.addStretch(1)
         left.addLayout(row3)
@@ -231,6 +242,7 @@ class OptimizeTab(QtWidgets.QWidget):
         self.prob_threshold_spin.setRange(0, 100)
         self.prob_threshold_spin.setValue(0)
         self.prob_threshold_spin.setSuffix("%")
+        self.prob_threshold_spin.valueChanged.connect(self._schedule_options_save)
         row5.addWidget(self.prob_threshold_spin)
         row5.addStretch(1)
         left.addLayout(row5)
@@ -244,13 +256,16 @@ class OptimizeTab(QtWidgets.QWidget):
             combo = QtWidgets.QComboBox()
             combo.addItems(options)
             combo.setCurrentText(defaults[idx])
+            combo.currentTextChanged.connect(self._schedule_options_save)
             self.priority_order_combos.append(combo)
             row6.addWidget(combo)
         row6.addStretch(1)
         left.addLayout(row6)
 
         self.dup_check.toggled.connect(self._update_dup_state)
+        self.dup_check.toggled.connect(self._schedule_options_save)
         self.dup_slider.valueChanged.connect(self._update_dup_label)
+        self.dup_slider.valueChanged.connect(self._schedule_options_save)
         self._update_dup_state()
         self._update_dup_label()
 
@@ -266,24 +281,28 @@ class OptimizeTab(QtWidgets.QWidget):
         self.evo_pop_spin = QtWidgets.QSpinBox()
         self.evo_pop_spin.setRange(10, 200)
         self.evo_pop_spin.setValue(40)
+        self.evo_pop_spin.valueChanged.connect(self._schedule_options_save)
         evo_layout.addWidget(self.evo_pop_spin, 1, 1)
 
         evo_layout.addWidget(QtWidgets.QLabel("Elite"), 1, 2)
         self.evo_elite_spin = QtWidgets.QSpinBox()
         self.evo_elite_spin.setRange(1, 50)
         self.evo_elite_spin.setValue(4)
+        self.evo_elite_spin.valueChanged.connect(self._schedule_options_save)
         evo_layout.addWidget(self.evo_elite_spin, 1, 3)
 
         evo_layout.addWidget(QtWidgets.QLabel("Mutation %"), 2, 0)
         self.evo_mut_spin = QtWidgets.QSpinBox()
         self.evo_mut_spin.setRange(0, 100)
         self.evo_mut_spin.setValue(20)
+        self.evo_mut_spin.valueChanged.connect(self._schedule_options_save)
         evo_layout.addWidget(self.evo_mut_spin, 2, 1)
 
         evo_layout.addWidget(QtWidgets.QLabel("Crossover %"), 2, 2)
         self.evo_cross_spin = QtWidgets.QSpinBox()
         self.evo_cross_spin.setRange(0, 100)
         self.evo_cross_spin.setValue(70)
+        self.evo_cross_spin.valueChanged.connect(self._schedule_options_save)
         evo_layout.addWidget(self.evo_cross_spin, 2, 3)
 
         left.addWidget(self.evo_box)
@@ -355,6 +374,7 @@ class OptimizeTab(QtWidgets.QWidget):
         weight_row.addStretch(1)
         self.tag_priority_layout.addLayout(weight_row)
         self.tag_priority_weight_slider.valueChanged.connect(self._update_tag_weight_label)
+        self.tag_priority_weight_slider.valueChanged.connect(self._schedule_options_save)
         self._update_tag_weight_label()
 
         self.tag_rows_layout = QtWidgets.QVBoxLayout()
@@ -432,6 +452,10 @@ class OptimizeTab(QtWidgets.QWidget):
 
         self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
 
+        self._options_save_timer = QtCore.QTimer(self)
+        self._options_save_timer.setSingleShot(True)
+        self._options_save_timer.timeout.connect(self._save_current_options)
+
     # -------------------------
     # Refresh
     # -------------------------
@@ -457,45 +481,54 @@ class OptimizeTab(QtWidgets.QWidget):
         variant = self._find_variant_by_name(name)
         if not variant:
             return
+        prev_id = self._loaded_variant_id
+        if prev_id:
+            self._persist_options(prev_id)
+        self._restoring_options = True
 
-        # clear rows
-        for i in reversed(range(self.cards_layout.count())):
-            item = self.cards_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().deleteLater()
-        self.card_rows.clear()
+        try:
+            # clear rows
+            for i in reversed(range(self.cards_layout.count())):
+                item = self.cards_layout.itemAt(i)
+                if item and item.widget():
+                    item.widget().deleteLater()
+            self.card_rows.clear()
 
-        cards = safe_sorted_cards(list(variant.decklist.keys()))
-        self._loaded_variant_id = variant.id
-        self._loaded_cards = set(cards)
-        for i, card in enumerate(cards):
-            cur_qty = int(variant.decklist.get(card, 0))
-            lock_btn = QtWidgets.QPushButton("🔓")
-            lock_btn.setFixedWidth(32)
-            min_spin = QtWidgets.QSpinBox()
-            min_spin.setRange(0, 3)
-            max_spin = QtWidgets.QSpinBox()
-            max_spin.setRange(0, 3)
-            min_spin.setValue(0)
-            max_spin.setValue(3)
+            cards = safe_sorted_cards(list(variant.decklist.keys()))
+            self._loaded_variant_id = variant.id
+            self._loaded_cards = set(cards)
+            for i, card in enumerate(cards):
+                cur_qty = int(variant.decklist.get(card, 0))
+                lock_btn = QtWidgets.QPushButton("🔓")
+                lock_btn.setFixedWidth(32)
+                min_spin = QtWidgets.QSpinBox()
+                min_spin.setRange(0, 3)
+                max_spin = QtWidgets.QSpinBox()
+                max_spin.setRange(0, 3)
+                min_spin.setValue(0)
+                max_spin.setValue(3)
 
-            lock_btn.clicked.connect(lambda _=None, c=card: self._toggle_lock(c))
+                lock_btn.clicked.connect(lambda _=None, c=card: self._toggle_lock(c))
+                min_spin.valueChanged.connect(self._schedule_options_save)
+                max_spin.valueChanged.connect(self._schedule_options_save)
 
-            self.cards_layout.addWidget(lock_btn, i, 0)
-            self.cards_layout.addWidget(QtWidgets.QLabel(card), i, 1)
-            self.cards_layout.addWidget(QtWidgets.QLabel(str(cur_qty)), i, 2)
-            self.cards_layout.addWidget(min_spin, i, 3)
-            self.cards_layout.addWidget(max_spin, i, 4)
+                self.cards_layout.addWidget(lock_btn, i, 0)
+                self.cards_layout.addWidget(QtWidgets.QLabel(card), i, 1)
+                self.cards_layout.addWidget(QtWidgets.QLabel(str(cur_qty)), i, 2)
+                self.cards_layout.addWidget(min_spin, i, 3)
+                self.cards_layout.addWidget(max_spin, i, 4)
 
-            self.card_rows[card] = {
-                "current": cur_qty,
-                "lock": False,
-                "lock_btn": lock_btn,
-                "min_spin": min_spin,
-                "max_spin": max_spin,
-                "last_min": 0,
-                "last_max": 3,
-            }
+                self.card_rows[card] = {
+                    "current": cur_qty,
+                    "lock": False,
+                    "lock_btn": lock_btn,
+                    "min_spin": min_spin,
+                    "max_spin": max_spin,
+                    "last_min": 0,
+                    "last_max": 3,
+                }
+        finally:
+            self._restoring_options = False
 
         self._last_result = None
         self._last_base = None
@@ -506,6 +539,7 @@ class OptimizeTab(QtWidgets.QWidget):
         if self.result_summary:
             self.result_summary.setText("No result yet.")
 
+        self._restore_saved_options(variant.id)
         self._restore_paused_state(variant.id)
 
     def _find_variant_by_name(self, name: str) -> Optional[Any]:
@@ -648,6 +682,180 @@ class OptimizeTab(QtWidgets.QWidget):
     def _update_tag_value(self, tag: str, value: int, label: QtWidgets.QLabel) -> None:
         self._tag_priority_values[tag] = int(value)
         label.setText(f"{int(value)}")
+        self._schedule_options_save()
+
+    # -------------------------
+    # Options persistence
+    # -------------------------
+
+    def _schedule_options_save(self, *_args: Any) -> None:
+        if self._restoring_options:
+            return
+        if not self._options_save_timer:
+            return
+        self._options_save_timer.start(250)
+
+    def _save_current_options(self) -> None:
+        if self._restoring_options:
+            return
+        variant_id = self._loaded_variant_id
+        if not variant_id and self.variant_combo is not None:
+            variant = self._find_variant_by_name(self.variant_combo.currentText().strip())
+            if variant:
+                variant_id = variant.id
+        if not variant_id:
+            return
+        self._persist_options(variant_id)
+
+    def _gather_options(self) -> Dict[str, Any]:
+        mode = "local"
+        if self.mode_combo and self.mode_combo.currentText().strip().lower().startswith("evolution"):
+            mode = "evolution"
+        settings: Dict[str, Any] = {}
+        if self.min_spin:
+            settings["deck_min"] = int(self.min_spin.value())
+        if self.max_spin:
+            settings["deck_max"] = int(self.max_spin.value())
+        if self.eval_spin:
+            settings["sims_per_step"] = int(self.eval_spin.value())
+        if self.max_steps_spin:
+            settings["max_steps"] = int(self.max_steps_spin.value())
+        if self.goingfirst_check:
+            settings["goingfirst"] = bool(self.goingfirst_check.isChecked())
+        if self.deep_check:
+            settings["deep_search"] = bool(self.deep_check.isChecked())
+        if self.dup_check:
+            settings["dup_enabled"] = bool(self.dup_check.isChecked())
+        if self.dup_slider:
+            settings["dup_weight"] = int(self.dup_slider.value())
+        if self.tag_priority_weight_slider:
+            settings["tag_weight"] = int(self.tag_priority_weight_slider.value())
+        if self.prob_threshold_spin:
+            settings["prob_threshold"] = int(self.prob_threshold_spin.value())
+        settings["priority_order"] = list(self._priority_order_from_ui())
+        if self.evo_pop_spin:
+            settings["evo_population"] = int(self.evo_pop_spin.value())
+        if self.evo_elite_spin:
+            settings["evo_elite"] = int(self.evo_elite_spin.value())
+        if self.evo_mut_spin:
+            settings["evo_mutation_rate"] = int(self.evo_mut_spin.value())
+        if self.evo_cross_spin:
+            settings["evo_crossover_rate"] = int(self.evo_cross_spin.value())
+
+        constraints: Dict[str, Any] = {}
+        for card, row in self.card_rows.items():
+            min_spin = row.get("min_spin")
+            max_spin = row.get("max_spin")
+            if not min_spin or not max_spin:
+                continue
+            min_v = int(min_spin.value())
+            max_v = int(max_spin.value())
+            constraints[card] = {
+                "min": min_v,
+                "max": max_v,
+                "lock": bool(row.get("lock")),
+                "last_min": int(row.get("last_min", min_v)),
+                "last_max": int(row.get("last_max", max_v)),
+            }
+
+        return {
+            "mode": mode,
+            "settings": settings,
+            "tag_priorities": dict(self._tag_priority_values),
+            "constraints": constraints,
+        }
+
+    def _persist_options(self, variant_id: str) -> None:
+        if not variant_id:
+            return
+        store = self.app.optimize_state.setdefault("options_by_variant", {})
+        store[variant_id] = self._gather_options()
+        self.app.save_optimize_state()
+
+    def _restore_saved_options(self, variant_id: str) -> None:
+        store = self.app.optimize_state.get("options_by_variant", {})
+        raw = store.get(variant_id)
+        if not isinstance(raw, dict):
+            return
+        settings = raw.get("settings", {}) if isinstance(raw.get("settings", {}), dict) else {}
+        constraints = raw.get("constraints", {}) if isinstance(raw.get("constraints", {}), dict) else {}
+        tag_priorities = raw.get("tag_priorities", {}) if isinstance(raw.get("tag_priorities", {}), dict) else {}
+        mode = str(raw.get("mode", "")).strip().lower()
+
+        self._restoring_options = True
+        try:
+            if self.mode_combo and mode:
+                label = "Evolution" if mode.startswith("evo") else "Local search"
+                self.mode_combo.setCurrentText(label)
+            if self.min_spin and "deck_min" in settings:
+                self.min_spin.setValue(int(settings.get("deck_min", self.min_spin.value())))
+            if self.max_spin and "deck_max" in settings:
+                self.max_spin.setValue(int(settings.get("deck_max", self.max_spin.value())))
+            if self.eval_spin and "sims_per_step" in settings:
+                self.eval_spin.setValue(int(settings.get("sims_per_step", self.eval_spin.value())))
+            if self.max_steps_spin and "max_steps" in settings:
+                self.max_steps_spin.setValue(int(settings.get("max_steps", self.max_steps_spin.value())))
+            if self.goingfirst_check and "goingfirst" in settings:
+                self.goingfirst_check.setChecked(bool(settings.get("goingfirst", True)))
+            if self.deep_check and "deep_search" in settings:
+                self.deep_check.setChecked(bool(settings.get("deep_search", True)))
+            if self.dup_check and "dup_enabled" in settings:
+                self.dup_check.setChecked(bool(settings.get("dup_enabled", False)))
+            if self.dup_slider and "dup_weight" in settings:
+                self.dup_slider.setValue(int(settings.get("dup_weight", self.dup_slider.value())))
+            if self.tag_priority_weight_slider and "tag_weight" in settings:
+                self.tag_priority_weight_slider.setValue(int(settings.get("tag_weight", self.tag_priority_weight_slider.value())))
+            if self.prob_threshold_spin and "prob_threshold" in settings:
+                self.prob_threshold_spin.setValue(int(settings.get("prob_threshold", self.prob_threshold_spin.value())))
+            if "priority_order" in settings and isinstance(settings.get("priority_order"), list):
+                self._set_priority_order_ui(list(settings.get("priority_order") or []))
+            if self.evo_pop_spin and "evo_population" in settings:
+                self.evo_pop_spin.setValue(int(settings.get("evo_population", self.evo_pop_spin.value())))
+            if self.evo_elite_spin and "evo_elite" in settings:
+                self.evo_elite_spin.setValue(int(settings.get("evo_elite", self.evo_elite_spin.value())))
+            if self.evo_mut_spin and "evo_mutation_rate" in settings:
+                self.evo_mut_spin.setValue(int(settings.get("evo_mutation_rate", self.evo_mut_spin.value())))
+            if self.evo_cross_spin and "evo_crossover_rate" in settings:
+                self.evo_cross_spin.setValue(int(settings.get("evo_crossover_rate", self.evo_cross_spin.value())))
+
+            if isinstance(tag_priorities, dict):
+                self._tag_priority_values = {str(k): int(v) for k, v in tag_priorities.items() if int(v) >= 0}
+
+            for card, row in self.card_rows.items():
+                cfg = constraints.get(card)
+                if not isinstance(cfg, dict):
+                    continue
+                min_spin = row.get("min_spin")
+                max_spin = row.get("max_spin")
+                if not min_spin or not max_spin:
+                    continue
+                min_v = int(cfg.get("min", min_spin.value()))
+                max_v = int(cfg.get("max", max_spin.value()))
+                row["last_min"] = int(cfg.get("last_min", min_v))
+                row["last_max"] = int(cfg.get("last_max", max_v))
+                locked = bool(cfg.get("lock", False))
+                row["lock"] = locked
+                if locked:
+                    cur_qty = max(0, min(3, int(row.get("current", 0))))
+                    min_spin.setValue(cur_qty)
+                    max_spin.setValue(cur_qty)
+                    min_spin.setEnabled(False)
+                    max_spin.setEnabled(False)
+                    row["lock_btn"].setText("🔒")
+                else:
+                    min_spin.setValue(min_v)
+                    max_spin.setValue(max_v)
+                    min_spin.setEnabled(True)
+                    max_spin.setEnabled(True)
+                    row["lock_btn"].setText("🔓")
+        finally:
+            self._restoring_options = False
+
+        self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
+        self._update_dup_state()
+        self._update_dup_label()
+        self._update_tag_weight_label()
+        self._refresh_tag_priorities()
 
     # -------------------------
     # Locks and constraints
@@ -676,6 +884,7 @@ class OptimizeTab(QtWidgets.QWidget):
             row["min_spin"].setEnabled(True)
             row["max_spin"].setEnabled(True)
             row["lock_btn"].setText("🔓")
+        self._schedule_options_save()
 
     def _collect_constraints(self) -> Dict[str, Tuple[int, int]]:
         constraints: Dict[str, Tuple[int, int]] = {}
@@ -743,6 +952,7 @@ class OptimizeTab(QtWidgets.QWidget):
         if not variant:
             QtWidgets.QMessageBox.warning(self, "Missing data", "Please select a deck variant.")
             return
+        self._persist_options(variant.id)
         self._clear_state(variant.id)
 
         deck_min = int(self.min_spin.value())
@@ -876,6 +1086,24 @@ class OptimizeTab(QtWidgets.QWidget):
                 state=None,
             )
 
+        insights = getattr(self.app, "insights_tab", None)
+        if insights is not None:
+            state = runner.state
+            base_tag_score = getattr(state, "base_tag_score", getattr(state, "current_tag_score", 0.0))
+            insights.begin_run(
+                variant_id=variant.id,
+                variant_name=variant.name,
+                mode=mode,
+                prob_threshold=prob_threshold,
+                priority_order=priority_order,
+                base_counts=state.base_counts if state else None,
+                base_prob=state.base_prob if state else None,
+                base_tag_score=base_tag_score,
+                base_trap_mean=state.base_trap_mean if state else None,
+                base_dup_prob=state.base_dup_prob if state else None,
+                reset=True,
+            )
+
         self._pause_requested = False
         self._abort_requested = False
         self._active_state = runner.state
@@ -954,6 +1182,27 @@ class OptimizeTab(QtWidgets.QWidget):
                 state=state,
             )
 
+        insights = getattr(self.app, "insights_tab", None)
+        if insights is not None:
+            variant_name = ""
+            variant = self.app.deck_variants.get(state.variant_id)
+            if variant:
+                variant_name = variant.name
+            base_tag_score = getattr(state, "base_tag_score", getattr(state, "current_tag_score", 0.0))
+            insights.begin_run(
+                variant_id=state.variant_id,
+                variant_name=variant_name or state.variant_id,
+                mode=self._active_mode,
+                prob_threshold=state.settings.prob_threshold,
+                priority_order=list(state.settings.priority_order or []),
+                base_counts=state.base_counts,
+                base_prob=state.base_prob,
+                base_tag_score=base_tag_score,
+                base_trap_mean=state.base_trap_mean,
+                base_dup_prob=state.base_dup_prob,
+                reset=False,
+            )
+
         self._set_running_state(True)
         self.status_label.setText("Evolution…" if self._active_mode == "evolution" else "Optimizing…")
 
@@ -991,6 +1240,29 @@ class OptimizeTab(QtWidgets.QWidget):
             self.eval_status_label.setText("")
         if progress.detail_text:
             self.eval_detail.setText(progress.detail_text)
+        if progress.is_preemptive and progress.best_counts and progress.base_counts:
+            self._render_result(
+                best_counts=progress.best_counts,
+                base_counts=progress.base_counts,
+                locked_cards=set(progress.locked_cards or []),
+                best_prob=float(progress.best_prob or 0.0),
+                base_prob=float(progress.base_prob or 0.0),
+                best_deckcount=int(
+                    progress.best_deckcount
+                    if progress.best_deckcount is not None
+                    else sum(progress.best_counts.values())
+                ),
+                base_deckcount=int(
+                    progress.base_deckcount
+                    if progress.base_deckcount is not None
+                    else sum(progress.base_counts.values())
+                ),
+                summary_prefix="Pre-emptive",
+                best_label="Best so far",
+            )
+        insights = getattr(self.app, "insights_tab", None)
+        if insights is not None:
+            insights.on_progress(progress)
 
     def _on_finished(self, result: Any) -> None:
         status = result.status
@@ -1118,57 +1390,61 @@ class OptimizeTab(QtWidgets.QWidget):
 
         self._active_state = state
         self._active_mode = mode
-        # restore settings to match paused run
-        if self.mode_combo:
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentText("Evolution" if mode == "evolution" else "Local search")
-            self.mode_combo.blockSignals(False)
-        self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
-        self.min_spin.setValue(int(state.settings.deck_min))
-        self.max_spin.setValue(int(state.settings.deck_max))
-        self.eval_spin.setValue(int(state.settings.sims_per_step))
-        self.max_steps_spin.setValue(int(state.settings.max_steps))
-        self.goingfirst_check.setChecked(bool(state.settings.goingfirst))
-        self.deep_check.setChecked(bool(state.settings.deep_search))
-        self.dup_check.setChecked(bool(state.settings.dup_penalty_weight > 0))
-        self.dup_slider.setValue(int(round(state.settings.dup_penalty_weight * 100)))
-        self.tag_priority_weight_slider.setValue(int(round(state.settings.tag_weight * 100)))
-        if self.prob_threshold_spin:
-            self.prob_threshold_spin.setValue(int(round(state.settings.prob_threshold * 100)))
-        if self.priority_order_combos:
-            self._set_priority_order_ui(list(state.settings.priority_order or []))
-        if self.evo_pop_spin:
-            self.evo_pop_spin.setValue(int(state.settings.evo_population))
-        if self.evo_elite_spin:
-            self.evo_elite_spin.setValue(int(state.settings.evo_elite))
-        if self.evo_mut_spin:
-            self.evo_mut_spin.setValue(int(round(state.settings.evo_mutation_rate * 100)))
-        if self.evo_cross_spin:
-            self.evo_cross_spin.setValue(int(round(state.settings.evo_crossover_rate * 100)))
-        max_val = self._tag_priority_max()
-        self._tag_priority_values = {
-            tag: min(int(round(weight)), max_val)
-            for tag, weight in (state.settings.tag_priorities or {}).items()
-        }
-        for tag, weight in (state.settings.tag_priorities or {}).items():
-            row = self.tag_rows.get(tag)
-            if row:
-                slider = row["slider"]
-                slider.setRange(0, max_val)
-                slider.setValue(min(int(round(weight)), max_val))
-        if state.last_detail:
-            self.eval_detail.setText(state.last_detail)
+        self._restoring_options = True
+        try:
+            # restore settings to match paused run
+            if self.mode_combo:
+                self.mode_combo.blockSignals(True)
+                self.mode_combo.setCurrentText("Evolution" if mode == "evolution" else "Local search")
+                self.mode_combo.blockSignals(False)
+            self._on_mode_changed(self.mode_combo.currentText() if self.mode_combo else "")
+            self.min_spin.setValue(int(state.settings.deck_min))
+            self.max_spin.setValue(int(state.settings.deck_max))
+            self.eval_spin.setValue(int(state.settings.sims_per_step))
+            self.max_steps_spin.setValue(int(state.settings.max_steps))
+            self.goingfirst_check.setChecked(bool(state.settings.goingfirst))
+            self.deep_check.setChecked(bool(state.settings.deep_search))
+            self.dup_check.setChecked(bool(state.settings.dup_penalty_weight > 0))
+            self.dup_slider.setValue(int(round(state.settings.dup_penalty_weight * 100)))
+            self.tag_priority_weight_slider.setValue(int(round(state.settings.tag_weight * 100)))
+            if self.prob_threshold_spin:
+                self.prob_threshold_spin.setValue(int(round(state.settings.prob_threshold * 100)))
+            if self.priority_order_combos:
+                self._set_priority_order_ui(list(state.settings.priority_order or []))
+            if self.evo_pop_spin:
+                self.evo_pop_spin.setValue(int(state.settings.evo_population))
+            if self.evo_elite_spin:
+                self.evo_elite_spin.setValue(int(state.settings.evo_elite))
+            if self.evo_mut_spin:
+                self.evo_mut_spin.setValue(int(round(state.settings.evo_mutation_rate * 100)))
+            if self.evo_cross_spin:
+                self.evo_cross_spin.setValue(int(round(state.settings.evo_crossover_rate * 100)))
+            max_val = self._tag_priority_max()
+            self._tag_priority_values = {
+                tag: min(int(round(weight)), max_val)
+                for tag, weight in (state.settings.tag_priorities or {}).items()
+            }
+            for tag, weight in (state.settings.tag_priorities or {}).items():
+                row = self.tag_rows.get(tag)
+                if row:
+                    slider = row["slider"]
+                    slider.setRange(0, max_val)
+                    slider.setValue(min(int(round(weight)), max_val))
+            if state.last_detail:
+                self.eval_detail.setText(state.last_detail)
 
-        # restore constraints
-        for card, (mn, mx) in state.constraints.items():
-            row = self.card_rows.get(card)
-            if not row:
-                continue
-            row["min_spin"].setValue(mn)
-            row["max_spin"].setValue(mx)
-            if card in state.locked_cards:
-                row["lock"] = False
-                self._toggle_lock(card)
+            # restore constraints
+            for card, (mn, mx) in state.constraints.items():
+                row = self.card_rows.get(card)
+                if not row:
+                    continue
+                row["min_spin"].setValue(mn)
+                row["max_spin"].setValue(mx)
+                if card in state.locked_cards:
+                    row["lock"] = False
+                    self._toggle_lock(card)
+        finally:
+            self._restoring_options = False
 
         total_steps = max(1, int(state.settings.max_steps))
         if isinstance(state, EvolutionState):
@@ -1188,18 +1464,26 @@ class OptimizeTab(QtWidgets.QWidget):
     # Results
     # -------------------------
 
-    def _show_result(self, state: OptimizationState | EvolutionState) -> None:
-        self.step_progress.setValue(100)
-        self.eval_progress.setValue(100)
-        self.status_label.setText("Done.")
-
-        self._last_result = dict(state.best_counts)
-        self._last_base = dict(state.base_counts)
-        self._last_prob = state.best_prob
-        self._last_base_prob = state.base_prob
-        self._last_locked = set(state.locked_cards)
-        self._last_deckcount = int(state.best_deckcount)
-        self._last_base_deckcount = int(state.base_deckcount)
+    def _render_result(
+        self,
+        *,
+        best_counts: Dict[str, int],
+        base_counts: Dict[str, int],
+        locked_cards: set[str],
+        best_prob: float,
+        base_prob: float,
+        best_deckcount: int,
+        base_deckcount: int,
+        summary_prefix: Optional[str] = None,
+        best_label: str = "Optimized",
+    ) -> None:
+        self._last_result = dict(best_counts)
+        self._last_base = dict(base_counts)
+        self._last_prob = float(best_prob)
+        self._last_base_prob = float(base_prob)
+        self._last_locked = set(locked_cards)
+        self._last_deckcount = int(best_deckcount)
+        self._last_base_deckcount = int(base_deckcount)
 
         if self.result_table:
             table = self.result_table
@@ -1207,12 +1491,12 @@ class OptimizeTab(QtWidgets.QWidget):
             table_block = QtCore.QSignalBlocker(table)
             table.setUpdatesEnabled(False)
             table.setSortingEnabled(False)
-            cards = safe_sorted_cards(list(state.best_counts.keys()))
+            cards = safe_sorted_cards(list(best_counts.keys()))
             table.setRowCount(len(cards))
             for row, card in enumerate(cards):
-                qty = int(state.best_counts.get(card, 0))
-                delta = qty - int(state.base_counts.get(card, 0))
-                lock_flag = "🔒" if card in state.locked_cards else ""
+                qty = int(best_counts.get(card, 0))
+                delta = qty - int(base_counts.get(card, 0))
+                lock_flag = "🔒" if card in locked_cards else ""
                 table.setItem(row, 0, QtWidgets.QTableWidgetItem(card))
                 table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(qty)))
                 delta_item = QtWidgets.QTableWidgetItem(f"{delta:+d}")
@@ -1227,22 +1511,38 @@ class OptimizeTab(QtWidgets.QWidget):
             del table_block
 
         if self.result_summary:
-            delta = state.best_prob - state.base_prob
-            base_count = int(state.base_deckcount)
-            result_count = int(state.best_deckcount)
-            base_cards = deck_size_positive(state.base_counts)
-            result_cards = deck_size_positive(state.best_counts)
+            delta = best_prob - base_prob
+            base_count = int(base_deckcount)
+            result_count = int(best_deckcount)
+            base_cards = deck_size_positive(base_counts)
+            result_cards = deck_size_positive(best_counts)
             base_blank = max(0, base_count - base_cards)
             result_blank = max(0, result_count - result_cards)
             base_detail = f"Deck {base_count}" + (f" (+{base_blank} blanks)" if base_blank else "")
             result_detail = f"Deck {result_count}" + (f" (+{result_blank} blanks)" if result_blank else "")
             penalty_detail = ""
             if self.dup_check.isChecked() and self.dup_slider.value() > 0:
-                penalty_detail = f"  |  Penalty {self.dup_slider.value():.0f}%"
+                penalty_detail = f"  |  Dup weight {self.dup_slider.value():.0f}%"
+            prefix = f"{summary_prefix}: " if summary_prefix else ""
             self.result_summary.setText(
-                f"Base: {state.base_prob:.4%} ({base_detail})  |  "
-                f"Optimized: {state.best_prob:.4%} ({result_detail})  |  Δ {delta:+.4%}{penalty_detail}"
+                f"{prefix}Base: {base_prob:.4%} ({base_detail})  |  "
+                f"{best_label}: {best_prob:.4%} ({result_detail})  |  Δ {delta:+.4%}{penalty_detail}"
             )
+
+    def _show_result(self, state: OptimizationState | EvolutionState) -> None:
+        self.step_progress.setValue(100)
+        self.eval_progress.setValue(100)
+        self.status_label.setText("Done.")
+        self._render_result(
+            best_counts=state.best_counts,
+            base_counts=state.base_counts,
+            locked_cards=set(state.locked_cards),
+            best_prob=float(state.best_prob),
+            base_prob=float(state.base_prob),
+            best_deckcount=int(state.best_deckcount),
+            base_deckcount=int(state.base_deckcount),
+            best_label="Optimized",
+        )
 
     def _create_variant_from_result(self) -> None:
         if not self._last_result:
