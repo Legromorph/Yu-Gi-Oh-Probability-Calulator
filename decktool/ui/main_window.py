@@ -118,6 +118,17 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
     def _set_status(self, text: str) -> None:
         self.status.showMessage(text, 5000)
 
+    def mark_project_changed(self, message: Optional[str] = None) -> None:
+        """Persist the current project immediately after a user-visible edit."""
+        if self.save_project_silent(set_status=False):
+            if message:
+                self._set_status(f"{message} Auto-saved.")
+            else:
+                self._set_status("Auto-saved.")
+            return
+        if message:
+            self._set_status(f"{message} Save As to enable auto-save.")
+
     def _fade_in(self) -> None:
         self.setWindowOpacity(0.0)
         anim = QtCore.QPropertyAnimation(self, b"windowOpacity")
@@ -149,7 +160,11 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
         deck_id = f"D{self._deck_id_counter:02d}"
         self._deck_id_counter += 1
 
-        variant = DeckVariant(id=deck_id, name=name, decklist=dict(cards or {}), bench={})
+        deck_cards = {str(c): int(q) for c, q in (cards or {}).items()}
+        for card in list(deck_cards.keys()):
+            deck_cards[card] = self.clamp_card_qty(card, deck_cards[card])
+
+        variant = DeckVariant(id=deck_id, name=name, decklist=deck_cards, bench={})
         self.deck_variants[deck_id] = variant
         self.deck_variant_order.append(deck_id)
         self.active_deck_id = deck_id
@@ -189,6 +204,47 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
                 if tag:
                     tags.add(tag)
         return safe_sorted_cards(list(tags))
+
+    def get_card_copy_limit(self, card: str) -> int:
+        meta = self.card_meta.get(card)
+        if not meta:
+            return 0
+        try:
+            raw = int(getattr(meta, "max_copies", 0) or 0)
+        except Exception:
+            return 0
+        if raw <= 0:
+            return 0
+        return 1 if raw <= 1 else 2
+
+    def clamp_card_qty(self, card: str, qty: int) -> int:
+        qty = max(0, int(qty))
+        limit = self.get_card_copy_limit(card)
+        if limit > 0 and qty > limit:
+            return limit
+        return qty
+
+    def enforce_card_copy_limit(self, card: str) -> bool:
+        limit = self.get_card_copy_limit(card)
+        if limit <= 0:
+            return False
+        changed = False
+        for dv in self.deck_variants.values():
+            for container in (dv.decklist, dv.bench):
+                if card not in container:
+                    continue
+                qty = max(0, int(container.get(card, 0)))
+                if qty > limit:
+                    container[card] = limit
+                    changed = True
+        return changed
+
+    def enforce_all_card_copy_limits(self) -> bool:
+        changed = False
+        for card in list(self.card_meta.keys()):
+            if self.enforce_card_copy_limit(card):
+                changed = True
+        return changed
 
     # -------------------------
     # Selection helpers
@@ -316,6 +372,7 @@ class DeckToolMainWindow(QtWidgets.QMainWindow):
             self.handtrap_effects = data.handtrap_effects
             self.handtrap_defs = dict(data.handtrap_defs) if data.handtrap_defs else dict(HANDTRAP_DEFS)
             self.card_meta = data.card_meta
+            self.enforce_all_card_copy_limits()
             self._id_counter = data.id_counter
             self.optimize_state = dict(data.optimize_state or {})
 

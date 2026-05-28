@@ -395,7 +395,7 @@ class OptimizeTab(QtWidgets.QWidget):
         cards_layout = QtWidgets.QVBoxLayout(cards_box)
         cards_layout.setContentsMargins(14, 12, 14, 12)
         cards_layout.setSpacing(6)
-        cards_layout.addWidget(QtWidgets.QLabel("Per-card limits (0–3)"))
+        cards_layout.addWidget(QtWidgets.QLabel("Per-card limits (default 0–3, semi 0–2, limited 0–1)"))
 
         header_row = QtWidgets.QGridLayout()
         header_row.addWidget(QtWidgets.QLabel("🔒"), 0, 0)
@@ -456,6 +456,52 @@ class OptimizeTab(QtWidgets.QWidget):
         self._options_save_timer.setSingleShot(True)
         self._options_save_timer.timeout.connect(self._save_current_options)
 
+    def _card_limit_cap(self, card: str) -> int:
+        limit = 0
+        try:
+            limit = int(self.app.get_card_copy_limit(card))
+        except Exception:
+            limit = 0
+        if limit <= 0:
+            return 3
+        return max(1, min(3, limit))
+
+    def _apply_card_limit_to_row(self, card: str, row: Dict[str, Any]) -> None:
+        min_spin = row.get("min_spin")
+        max_spin = row.get("max_spin")
+        if not min_spin or not max_spin:
+            return
+        cap = self._card_limit_cap(card)
+
+        min_block = QtCore.QSignalBlocker(min_spin)
+        max_block = QtCore.QSignalBlocker(max_spin)
+        min_spin.setRange(0, cap)
+        max_spin.setRange(0, cap)
+
+        row["last_min"] = max(0, min(cap, int(row.get("last_min", 0))))
+        row["last_max"] = max(0, min(cap, int(row.get("last_max", cap))))
+        if int(row["last_min"]) > int(row["last_max"]):
+            row["last_min"] = int(row["last_max"])
+
+        if bool(row.get("lock", False)):
+            cur_qty = max(0, min(cap, int(row.get("current", 0))))
+            min_spin.setValue(cur_qty)
+            max_spin.setValue(cur_qty)
+        else:
+            min_v = max(0, min(cap, int(min_spin.value())))
+            max_v = max(0, min(cap, int(max_spin.value())))
+            if min_v > max_v:
+                min_v = max_v
+            min_spin.setValue(min_v)
+            max_spin.setValue(max_v)
+
+        del min_block
+        del max_block
+
+    def _refresh_card_limit_ranges(self) -> None:
+        for card, row in self.card_rows.items():
+            self._apply_card_limit_to_row(card, row)
+
     # -------------------------
     # Refresh
     # -------------------------
@@ -475,6 +521,8 @@ class OptimizeTab(QtWidgets.QWidget):
             current_cards = set(current_variant.decklist.keys())
             if current_variant.id != self._loaded_variant_id or current_cards != self._loaded_cards:
                 self._load_variant()
+            else:
+                self._refresh_card_limit_ranges()
 
     def _load_variant(self) -> None:
         name = self.variant_combo.currentText().strip()
@@ -499,14 +547,15 @@ class OptimizeTab(QtWidgets.QWidget):
             self._loaded_cards = set(cards)
             for i, card in enumerate(cards):
                 cur_qty = int(variant.decklist.get(card, 0))
+                card_cap = self._card_limit_cap(card)
                 lock_btn = QtWidgets.QPushButton("🔓")
                 lock_btn.setFixedWidth(32)
                 min_spin = QtWidgets.QSpinBox()
-                min_spin.setRange(0, 3)
+                min_spin.setRange(0, card_cap)
                 max_spin = QtWidgets.QSpinBox()
-                max_spin.setRange(0, 3)
+                max_spin.setRange(0, card_cap)
                 min_spin.setValue(0)
-                max_spin.setValue(3)
+                max_spin.setValue(card_cap)
 
                 lock_btn.clicked.connect(lambda _=None, c=card: self._toggle_lock(c))
                 min_spin.valueChanged.connect(self._schedule_options_save)
@@ -525,7 +574,7 @@ class OptimizeTab(QtWidgets.QWidget):
                     "min_spin": min_spin,
                     "max_spin": max_spin,
                     "last_min": 0,
-                    "last_max": 3,
+                    "last_max": card_cap,
                 }
         finally:
             self._restoring_options = False
@@ -829,14 +878,15 @@ class OptimizeTab(QtWidgets.QWidget):
                 max_spin = row.get("max_spin")
                 if not min_spin or not max_spin:
                     continue
+                cap = self._card_limit_cap(card)
                 min_v = int(cfg.get("min", min_spin.value()))
                 max_v = int(cfg.get("max", max_spin.value()))
-                row["last_min"] = int(cfg.get("last_min", min_v))
-                row["last_max"] = int(cfg.get("last_max", max_v))
+                row["last_min"] = max(0, min(cap, int(cfg.get("last_min", min_v))))
+                row["last_max"] = max(0, min(cap, int(cfg.get("last_max", max_v))))
                 locked = bool(cfg.get("lock", False))
                 row["lock"] = locked
                 if locked:
-                    cur_qty = max(0, min(3, int(row.get("current", 0))))
+                    cur_qty = max(0, min(cap, int(row.get("current", 0))))
                     min_spin.setValue(cur_qty)
                     max_spin.setValue(cur_qty)
                     min_spin.setEnabled(False)
@@ -848,6 +898,7 @@ class OptimizeTab(QtWidgets.QWidget):
                     min_spin.setEnabled(True)
                     max_spin.setEnabled(True)
                     row["lock_btn"].setText("🔓")
+                self._apply_card_limit_to_row(card, row)
         finally:
             self._restoring_options = False
 
@@ -868,11 +919,12 @@ class OptimizeTab(QtWidgets.QWidget):
         locked = not bool(row["lock"])
         row["lock"] = locked
         cur_qty = int(row["current"])
+        cap = self._card_limit_cap(card)
 
         if locked:
             row["last_min"] = int(row["min_spin"].value())
             row["last_max"] = int(row["max_spin"].value())
-            locked_val = max(0, min(3, cur_qty))
+            locked_val = max(0, min(cap, cur_qty))
             row["min_spin"].setValue(locked_val)
             row["max_spin"].setValue(locked_val)
             row["min_spin"].setEnabled(False)
@@ -889,14 +941,15 @@ class OptimizeTab(QtWidgets.QWidget):
     def _collect_constraints(self) -> Dict[str, Tuple[int, int]]:
         constraints: Dict[str, Tuple[int, int]] = {}
         for card, row in self.card_rows.items():
+            cap = self._card_limit_cap(card)
             min_v = int(row["min_spin"].value())
             max_v = int(row["max_spin"].value())
             if bool(row["lock"]):
-                cur_qty = max(0, min(3, int(row["current"])))
+                cur_qty = max(0, min(cap, int(row["current"])))
                 min_v = cur_qty
                 max_v = cur_qty
-            min_v = max(0, min(3, min_v))
-            max_v = max(0, min(3, max_v))
+            min_v = max(0, min(cap, min_v))
+            max_v = max(0, min(cap, max_v))
             if min_v > max_v:
                 min_v, max_v = max_v, min_v
                 row["min_spin"].setValue(min_v)
@@ -995,7 +1048,7 @@ class OptimizeTab(QtWidgets.QWidget):
             for card, qty in (variant.bench or {}).items():
                 if card in constraints:
                     continue
-                max_qty = max(0, min(3, int(qty)))
+                max_qty = max(0, min(self._card_limit_cap(card), int(qty)))
                 if max_qty <= 0:
                     continue
                 bench_limits[card] = max_qty
@@ -1559,6 +1612,7 @@ class OptimizeTab(QtWidgets.QWidget):
             return
         self.app.add_deck_variant(name=new_name, cards=self._last_result)
         self.app.refresh_all()
+        self.app.mark_project_changed(f"Created deck variant {new_name}.")
 
     # -------------------------
     # UI helpers

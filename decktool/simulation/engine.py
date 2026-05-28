@@ -33,6 +33,7 @@ class SimulationContext:
     hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]]
     hand_min_counts: Dict[str, int]
     draw_effects: Dict[str, Dict[str, Any]]
+    prosperity_effects: Dict[str, Dict[str, Any]]
     card_to_tags: Dict[str, List[str]]
     handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]]
     trap_names: List[str]
@@ -99,6 +100,7 @@ def build_simulation_context(
         hands_by_id=hands_by_id,
         hand_min_counts=hand_min_counts,
         draw_effects=_extract_draw_effects(card_meta),
+        prosperity_effects=_extract_prosperity_effects(card_meta),
         card_to_tags=_extract_tag_index(card_meta),
         handtrap_effects=handtrap_effects,
         trap_names=list(trap_names or []),
@@ -412,6 +414,50 @@ def _extract_draw_effects(card_meta: Optional[Dict[str, Any]]) -> Dict[str, Dict
     return out
 
 
+def _extract_prosperity_effects(card_meta: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    if not card_meta:
+        return out
+    for card, meta in card_meta.items():
+        if not meta:
+            continue
+        eff = meta.get("prosperity_effect")
+        if not eff:
+            continue
+        dig_small = max(1, int(eff.get("dig_small", 3) or 3))
+        dig_large = max(dig_small, int(eff.get("dig_large", 6) or 6))
+        add_count = max(1, int(eff.get("add_count", 1) or 1))
+        mode_raw = str(eff.get("mode", "") or "").strip().lower()
+        if mode_raw in {"generic", "true_prosperity"}:
+            mode = mode_raw
+        else:
+            mode = "generic" if dig_small == dig_large else "true_prosperity"
+        if mode == "generic":
+            dig_large = dig_small
+        else:
+            # "True prosperity": fixed 3 or 6.
+            dig_small = 3
+            dig_large = 6
+        out[str(card)] = {
+            "mode": mode,
+            "dig_small": dig_small,
+            "dig_large": dig_large,
+            "add_count": add_count,
+            "is_true_prosperity": mode == "true_prosperity",
+        }
+    return out
+
+
+def _remaining_deck_after_hand(deck: List[str], hand: List[str]) -> List[str]:
+    remaining = list(deck)
+    for c in hand:
+        try:
+            remaining.remove(c)
+        except ValueError:
+            continue
+    return remaining
+
+
 def _best_after_cost(
     hand_counts: Counter,
     tag_counts: Counter,
@@ -551,6 +597,275 @@ def _try_draw_effects(
     )
 
 
+def _best_after_excavate(
+    hand_counts: Counter,
+    card_to_tags: Dict[str, List[str]],
+    excavated_cards: List[str],
+    add_count: int,
+    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hand_min_counts: Dict[str, int],
+) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    if add_count <= 0:
+        tag_counts = _count_tag_cards(hand_counts, card_to_tags)
+        hid, score = _best_hand_match(hand_counts, tag_counts, hands_pre, hands_by_id, hand_min_counts)
+        extra = _extra_copy_count(hand_counts) if hid else None
+        return hid, score, extra
+    if add_count > len(excavated_cards):
+        return None, None, None
+
+    best_id: Optional[str] = None
+    best_score: Optional[int] = None
+    best_extra: Optional[int] = None
+
+    def dfs(start_idx: int, remaining: int) -> None:
+        nonlocal best_id, best_score, best_extra
+        if remaining == 0:
+            tag_counts = _count_tag_cards(hand_counts, card_to_tags)
+            hid, score = _best_hand_match(hand_counts, tag_counts, hands_pre, hands_by_id, hand_min_counts)
+            if hid and (best_score is None or (score or 0) > best_score):
+                best_id = hid
+                best_score = score
+                best_extra = _extra_copy_count(hand_counts)
+            return
+
+        for i in range(start_idx, len(excavated_cards)):
+            card = excavated_cards[i]
+            hand_counts[card] += 1
+            dfs(i + 1, remaining - 1)
+            hand_counts[card] -= 1
+            if hand_counts[card] <= 0:
+                hand_counts.pop(card, None)
+
+    dfs(0, add_count)
+    return best_id, best_score, best_extra
+
+
+def _try_prosperity_effects(
+    hand: List[str],
+    hand_counts: Counter,
+    remaining_deck: List[str],
+    hands_pre: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hand_min_counts: Dict[str, int],
+    prosperity_effects: Dict[str, Dict[str, Any]],
+    card_to_tags: Dict[str, List[str]],
+    rnd: random.Random,
+) -> Tuple[Optional[str], Optional[int], Optional[int], Dict[str, bool]]:
+    best_id: Optional[str] = None
+    best_score: Optional[int] = None
+    best_extra: Optional[int] = None
+    best_dig_size = 10**9
+    true_stats = {
+        "has_true_prosperity": False,
+        "true_three_success": False,
+        "true_six_success": False,
+    }
+
+    def _consider(hid: Optional[str], score: Optional[int], extra: Optional[int], dig_size: int) -> None:
+        nonlocal best_id, best_score, best_extra, best_dig_size
+        if hid is None:
+            return
+        current_score = int(score or 0)
+        if best_score is None or current_score > best_score:
+            best_id = hid
+            best_score = score
+            best_extra = extra
+            best_dig_size = int(dig_size)
+            return
+        if current_score == int(best_score or 0) and int(dig_size) < int(best_dig_size):
+            best_id = hid
+            best_score = score
+            best_extra = extra
+            best_dig_size = int(dig_size)
+
+    seen = set(hand)
+    for card in seen:
+        eff = prosperity_effects.get(card)
+        if not eff:
+            continue
+        if not remaining_deck:
+            continue
+
+        add_count = max(1, int(eff.get("add_count", 1) or 1))
+        mode = str(eff.get("mode", "generic") or "generic").strip().lower()
+        if mode not in {"generic", "true_prosperity"}:
+            mode = "generic"
+
+        if mode == "generic":
+            dig_count = max(1, int(eff.get("dig_small", 3) or 3))
+            dig_count = min(dig_count, len(remaining_deck))
+            if dig_count <= 0:
+                continue
+            excavated = rnd.sample(remaining_deck, dig_count)
+            hid, score, extra = _best_after_excavate(
+                Counter(hand_counts),
+                card_to_tags,
+                excavated,
+                add_count,
+                hands_pre,
+                hands_by_id,
+                hand_min_counts,
+            )
+            _consider(hid, score, extra, dig_count)
+            continue
+
+        true_stats["has_true_prosperity"] = True
+
+        dig_small = max(1, int(eff.get("dig_small", 3) or 3))
+        dig_large = max(dig_small, int(eff.get("dig_large", 6) or 6))
+        dig_large = min(dig_large, len(remaining_deck))
+        dig_small = min(dig_small, dig_large)
+        if dig_large <= 0:
+            continue
+
+        excavated_large = rnd.sample(remaining_deck, dig_large)
+        excavated_small = excavated_large[:dig_small]
+
+        hid_small, score_small, extra_small = _best_after_excavate(
+            Counter(hand_counts),
+            card_to_tags,
+            excavated_small,
+            add_count,
+            hands_pre,
+            hands_by_id,
+            hand_min_counts,
+        )
+        if hid_small is not None:
+            true_stats["true_three_success"] = True
+        _consider(hid_small, score_small, extra_small, dig_small)
+
+        hid_large, score_large, extra_large = _best_after_excavate(
+            Counter(hand_counts),
+            card_to_tags,
+            excavated_large,
+            add_count,
+            hands_pre,
+            hands_by_id,
+            hand_min_counts,
+        )
+        if hid_large is not None:
+            true_stats["true_six_success"] = True
+        _consider(hid_large, score_large, extra_large, dig_large)
+
+    return best_id, best_score, best_extra, true_stats
+
+
+def _resolve_opening_hand(
+    hand: List[str],
+    deck: List[str],
+    hands_pre_trap_only: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hands_pre_prob: List[Tuple[str, str, Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]],
+    hand_min_counts: Dict[str, int],
+    draw_effects: Dict[str, Dict[str, Any]],
+    prosperity_effects: Dict[str, Dict[str, Any]],
+    card_to_tags: Dict[str, List[str]],
+    rnd: random.Random,
+) -> Tuple[Optional[str], Optional[int], Optional[str], Optional[int], bool, bool, bool]:
+    hc = Counter(hand)
+    tag_counts = _count_tag_cards(hc, card_to_tags)
+    base_extra = _extra_copy_count(hc)
+
+    best_trap_only_id: Optional[str] = None
+    if hands_pre_trap_only:
+        best_trap_only_id, _best_trap_only_score = _best_hand_match(
+            hc, tag_counts, hands_pre_trap_only, hands_by_id, hand_min_counts
+        )
+    best_prob_id: Optional[str] = None
+    if hands_pre_prob:
+        best_prob_id, _best_prob_score = _best_hand_match(
+            hc, tag_counts, hands_pre_prob, hands_by_id, hand_min_counts
+        )
+
+    best_trap_only_extra = base_extra if best_trap_only_id else None
+    best_prob_extra = base_extra if best_prob_id else None
+
+    # Draw effects are resolved first.
+    if (best_trap_only_id is None or best_prob_id is None) and draw_effects:
+        remaining = _remaining_deck_after_hand(deck, hand)
+        (
+            draw_trap_only_id,
+            _draw_trap_only_score,
+            draw_trap_only_extra,
+            draw_prob_id,
+            _draw_prob_score,
+            draw_prob_extra,
+        ) = _try_draw_effects(
+            hand,
+            hc,
+            remaining,
+            hands_pre_trap_only,
+            hands_pre_prob,
+            hands_by_id,
+            hand_min_counts,
+            draw_effects,
+            card_to_tags,
+            rnd,
+        )
+        if best_trap_only_id is None:
+            best_trap_only_id = draw_trap_only_id
+            best_trap_only_extra = draw_trap_only_extra
+        if best_prob_id is None:
+            best_prob_id = draw_prob_id
+            best_prob_extra = draw_prob_extra
+
+    true_prosperity_case = False
+    true_prosperity_three_suffices = False
+    true_prosperity_six_needed = False
+
+    # If still unplayable, resolve prosperity-like effects after draw effects.
+    if (best_trap_only_id is None or best_prob_id is None) and prosperity_effects:
+        remaining = _remaining_deck_after_hand(deck, hand)
+        if best_trap_only_id is None and hands_pre_trap_only:
+            trap_id, _trap_score, trap_extra, _trap_stats = _try_prosperity_effects(
+                hand,
+                hc,
+                remaining,
+                hands_pre_trap_only,
+                hands_by_id,
+                hand_min_counts,
+                prosperity_effects,
+                card_to_tags,
+                rnd,
+            )
+            if trap_id is not None:
+                best_trap_only_id = trap_id
+                best_trap_only_extra = trap_extra
+
+        if best_prob_id is None and hands_pre_prob:
+            prob_id, _prob_score, prob_extra, prob_stats = _try_prosperity_effects(
+                hand,
+                hc,
+                remaining,
+                hands_pre_prob,
+                hands_by_id,
+                hand_min_counts,
+                prosperity_effects,
+                card_to_tags,
+                rnd,
+            )
+            if prob_stats.get("has_true_prosperity"):
+                true_prosperity_case = True
+                true_prosperity_three_suffices = bool(prob_stats.get("true_three_success"))
+                true_prosperity_six_needed = bool(
+                    prob_stats.get("true_six_success") and not prob_stats.get("true_three_success")
+                )
+            if prob_id is not None:
+                best_prob_id = prob_id
+                best_prob_extra = prob_extra
+
+    return (
+        best_trap_only_id,
+        best_trap_only_extra,
+        best_prob_id,
+        best_prob_extra,
+        true_prosperity_case,
+        true_prosperity_three_suffices,
+        true_prosperity_six_needed,
+    )
+
+
 def _min_required_count(
     must: Dict[str, int],
     or_groups: List[List[Dict[str, int]]],
@@ -613,6 +928,7 @@ def _simulate_opening_stats_chunk(
     hands_by_id: Dict[str, Tuple[Dict[str, int], List[List[Dict[str, int]]], int, bool]],
     hand_min_counts: Dict[str, int],
     draw_effects: Dict[str, Dict[str, Any]],
+    prosperity_effects: Dict[str, Dict[str, Any]],
     card_to_tags: Dict[str, List[str]],
     handtrap_effects: Dict[str, Dict[str, Dict[str, Any]]],
     trap_names: List[str],
@@ -620,7 +936,7 @@ def _simulate_opening_stats_chunk(
     seed: int,
     dup_penalty_weight: float,
     track_tag_configs: bool,
-) -> Tuple[int, float, int, Dict[str, int], Dict[str, Dict[int, int]], Dict[str, int], Dict[str, int]]:
+) -> Tuple[int, float, int, Dict[str, int], Dict[str, Dict[int, int]], Dict[str, int], Dict[str, int], int, int, int]:
     rnd = random.Random(seed)
 
     hits_any_prob = 0
@@ -630,6 +946,9 @@ def _simulate_opening_stats_chunk(
     trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
     trap_sum_all: Counter[str] = Counter()
     tag_config_hist: Counter[str] | None = Counter() if track_tag_configs else None
+    true_prosperity_case_count = 0
+    true_prosperity_three_suffices_count = 0
+    true_prosperity_six_needed_count = 0
 
     def _tag_config_key(tag_counts: Counter) -> str:
         if not tag_counts:
@@ -645,54 +964,32 @@ def _simulate_opening_stats_chunk(
         if track_tag_configs and tag_config_hist is not None:
             tag_config_hist[_tag_config_key(tag_counts)] += 1
         base_extra = _extra_copy_count(hc)
-
-        best_trap_only_id = None
-        if hands_pre_trap_only:
-            best_trap_only_id, _best_trap_only_score = _best_hand_match(
-                hc, tag_counts, hands_pre_trap_only, hands_by_id, hand_min_counts
-            )
-        best_prob_id = None
-        if hands_pre_prob:
-            best_prob_id, _best_prob_score = _best_hand_match(
-                hc, tag_counts, hands_pre_prob, hands_by_id, hand_min_counts
-            )
-
-        best_trap_only_extra = base_extra if best_trap_only_id else None
-        best_prob_extra = base_extra if best_prob_id else None
-
-        # Retry with draw effects if no base hand matched (per category).
-        if (best_trap_only_id is None or best_prob_id is None) and draw_effects:
-            remaining = list(deck)
-            for c in hand:
-                try:
-                    remaining.remove(c)
-                except ValueError:
-                    continue
-            (
-                draw_trap_only_id,
-                _draw_trap_only_score,
-                draw_trap_only_extra,
-                draw_prob_id,
-                _draw_prob_score,
-                draw_prob_extra,
-            ) = _try_draw_effects(
-                hand,
-                hc,
-                remaining,
-                hands_pre_trap_only,
-                hands_pre_prob,
-                hands_by_id,
-                hand_min_counts,
-                draw_effects,
-                card_to_tags,
-                rnd,
-            )
-            if best_trap_only_id is None:
-                best_trap_only_id = draw_trap_only_id
-                best_trap_only_extra = draw_trap_only_extra
-            if best_prob_id is None:
-                best_prob_id = draw_prob_id
-                best_prob_extra = draw_prob_extra
+        (
+            best_trap_only_id,
+            best_trap_only_extra,
+            best_prob_id,
+            best_prob_extra,
+            true_prosperity_case,
+            true_prosperity_three_suffices,
+            true_prosperity_six_needed,
+        ) = _resolve_opening_hand(
+            hand,
+            deck,
+            hands_pre_trap_only,
+            hands_pre_prob,
+            hands_by_id,
+            hand_min_counts,
+            draw_effects,
+            prosperity_effects,
+            card_to_tags,
+            rnd,
+        )
+        if true_prosperity_case:
+            true_prosperity_case_count += 1
+        if true_prosperity_three_suffices:
+            true_prosperity_three_suffices_count += 1
+        if true_prosperity_six_needed:
+            true_prosperity_six_needed_count += 1
 
         if best_trap_only_id is None and best_prob_id is None:
             continue
@@ -733,6 +1030,9 @@ def _simulate_opening_stats_chunk(
         trap_hist_out,
         dict(trap_sum_all),
         dict(tag_config_hist) if tag_config_hist is not None else {},
+        int(true_prosperity_case_count),
+        int(true_prosperity_three_suffices_count),
+        int(true_prosperity_six_needed_count),
     )
 
 
@@ -798,6 +1098,7 @@ def simulate_opening_stats(
     hands_by_id = context.hands_by_id
     hand_min_counts = context.hand_min_counts
     draw_effects = context.draw_effects
+    prosperity_effects = context.prosperity_effects
     card_to_tags = context.card_to_tags
     handtrap_effects = context.handtrap_effects
     trap_names = context.trap_names
@@ -818,6 +1119,9 @@ def simulate_opening_stats(
     trap_hist: Dict[str, Counter] = {t: Counter() for t in trap_names}
     trap_sum_all = Counter()
     tag_config_hist: Counter[str] | None = Counter() if track_tag_configs else None
+    true_prosperity_case_count = 0
+    true_prosperity_three_suffices_count = 0
+    true_prosperity_six_needed_count = 0
 
     def _tag_config_key(tag_counts: Counter) -> str:
         if not tag_counts:
@@ -873,6 +1177,7 @@ def simulate_opening_stats(
                     hands_by_id,
                     hand_min_counts,
                     draw_effects,
+                    prosperity_effects,
                     card_to_tags,
                     handtrap_effects,
                     trap_names,
@@ -893,7 +1198,18 @@ def simulate_opening_stats(
                 done_set, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
                 for fut in done_set:
                     this_chunk = futures[fut]
-                    h_prob, h_weighted, h_trap, h_by_hand, h_trap_hist, h_trap_sum, h_tag_cfg = fut.result()
+                    (
+                        h_prob,
+                        h_weighted,
+                        h_trap,
+                        h_by_hand,
+                        h_trap_hist,
+                        h_trap_sum,
+                        h_tag_cfg,
+                        h_true_prosp_case,
+                        h_true_prosp_three_suffices,
+                        h_true_prosp_six_needed,
+                    ) = fut.result()
                     hits_any_prob += int(h_prob)
                     hits_any_weighted += float(h_weighted)
                     hits_any_trap += int(h_trap)
@@ -903,6 +1219,9 @@ def simulate_opening_stats(
                     trap_sum_all.update(h_trap_sum)
                     if track_tag_configs and tag_config_hist is not None:
                         tag_config_hist.update(h_tag_cfg)
+                    true_prosperity_case_count += int(h_true_prosp_case)
+                    true_prosperity_three_suffices_count += int(h_true_prosp_three_suffices)
+                    true_prosperity_six_needed_count += int(h_true_prosp_six_needed)
                     done += this_chunk
                     if progress_cb:
                         progress_cb(done, total)
@@ -924,53 +1243,32 @@ def simulate_opening_stats(
                 if track_tag_configs and tag_config_hist is not None:
                     tag_config_hist[_tag_config_key(tag_counts)] += 1
                 base_extra = _extra_copy_count(hc)
-
-                best_trap_only_id = None
-                if hands_pre_trap_only:
-                    best_trap_only_id, _best_trap_only_score = _best_hand_match(
-                        hc, tag_counts, hands_pre_trap_only, hands_by_id, hand_min_counts
-                    )
-                best_prob_id = None
-                if hands_pre_prob:
-                    best_prob_id, _best_prob_score = _best_hand_match(
-                        hc, tag_counts, hands_pre_prob, hands_by_id, hand_min_counts
-                    )
-
-                best_trap_only_extra = base_extra if best_trap_only_id else None
-                best_prob_extra = base_extra if best_prob_id else None
-
-                if (best_trap_only_id is None or best_prob_id is None) and draw_effects:
-                    remaining = list(deck)
-                    for c in hand:
-                        try:
-                            remaining.remove(c)
-                        except ValueError:
-                            continue
-                    (
-                        draw_trap_only_id,
-                        _draw_trap_only_score,
-                        draw_trap_only_extra,
-                        draw_prob_id,
-                        _draw_prob_score,
-                        draw_prob_extra,
-                    ) = _try_draw_effects(
-                        hand,
-                        hc,
-                        remaining,
-                        hands_pre_trap_only,
-                        hands_pre_prob,
-                        hands_by_id,
-                        hand_min_counts,
-                        draw_effects,
-                        card_to_tags,
-                        rnd,
-                    )
-                    if best_trap_only_id is None:
-                        best_trap_only_id = draw_trap_only_id
-                        best_trap_only_extra = draw_trap_only_extra
-                    if best_prob_id is None:
-                        best_prob_id = draw_prob_id
-                        best_prob_extra = draw_prob_extra
+                (
+                    best_trap_only_id,
+                    best_trap_only_extra,
+                    best_prob_id,
+                    best_prob_extra,
+                    true_prosperity_case,
+                    true_prosperity_three_suffices,
+                    true_prosperity_six_needed,
+                ) = _resolve_opening_hand(
+                    hand,
+                    deck,
+                    hands_pre_trap_only,
+                    hands_pre_prob,
+                    hands_by_id,
+                    hand_min_counts,
+                    draw_effects,
+                    prosperity_effects,
+                    card_to_tags,
+                    rnd,
+                )
+                if true_prosperity_case:
+                    true_prosperity_case_count += 1
+                if true_prosperity_three_suffices:
+                    true_prosperity_three_suffices_count += 1
+                if true_prosperity_six_needed:
+                    true_prosperity_six_needed_count += 1
 
                 if best_trap_only_id is None and best_prob_id is None:
                     continue
@@ -1075,5 +1373,27 @@ def simulate_opening_stats(
         "trap_stats": trap_stats,
         "trap_samples": int(good_openings),
         "tag_config_top": tag_config_top,
+        "true_prosperity_case_count": int(true_prosperity_case_count),
+        "true_prosperity_case_probability": (
+            float(true_prosperity_case_count) / num_hands if num_hands > 0 else 0.0
+        ),
+        "true_prosperity_three_instead_of_six_count": int(true_prosperity_three_suffices_count),
+        "true_prosperity_three_instead_of_six_probability": (
+            float(true_prosperity_three_suffices_count) / num_hands if num_hands > 0 else 0.0
+        ),
+        "true_prosperity_six_needed_count": int(true_prosperity_six_needed_count),
+        "true_prosperity_six_needed_probability": (
+            float(true_prosperity_six_needed_count) / num_hands if num_hands > 0 else 0.0
+        ),
+        "true_prosperity_three_instead_of_six_given_case_probability": (
+            (float(true_prosperity_three_suffices_count) / float(true_prosperity_case_count))
+            if true_prosperity_case_count > 0
+            else 0.0
+        ),
+        "true_prosperity_six_needed_given_case_probability": (
+            (float(true_prosperity_six_needed_count) / float(true_prosperity_case_count))
+            if true_prosperity_case_count > 0
+            else 0.0
+        ),
     }
 # endregion

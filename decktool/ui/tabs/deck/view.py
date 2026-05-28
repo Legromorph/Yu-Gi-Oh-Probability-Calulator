@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ....models import CardMeta, DrawEffect
+from ....models import CardMeta, DrawEffect, ProsperityEffect
 from ....constants import CARD_TAGS
 from ....utils import safe_sorted_cards
 
@@ -72,13 +72,52 @@ class CardSettingsDialog(QtWidgets.QDialog):
         add_row.addStretch(1)
         tags_layout.addLayout(add_row)
 
+        limit_row = QtWidgets.QHBoxLayout()
+        limit_row.addWidget(QtWidgets.QLabel("Copy limit"))
+        self.limit_combo = QtWidgets.QComboBox()
+        self.limit_combo.addItem("Unlimited", 0)
+        self.limit_combo.addItem("Semi-limited (max 2)", 2)
+        self.limit_combo.addItem("Limited (max 1)", 1)
+        limit = int(getattr(self._meta, "max_copies", 0) or 0)
+        if limit <= 0:
+            idx = 0
+        elif limit <= 1:
+            idx = 2
+        else:
+            idx = 1
+        self.limit_combo.setCurrentIndex(idx)
+        limit_row.addWidget(self.limit_combo)
+        limit_row.addStretch(1)
+        tags_layout.addLayout(limit_row)
+
+        req_title = QtWidgets.QLabel("Deck requirements")
+        req_title.setProperty("role", "subtitle")
+        tags_layout.addWidget(req_title)
+        tags_layout.addWidget(
+            QtWidgets.QLabel("If this card is in the deck, each selected card must be in the deck (min 1).")
+        )
+
+        self.req_list = QtWidgets.QListWidget()
+        self.req_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        for card in self.app.get_all_deck_cards():
+            if card == self.card:
+                continue
+            self.req_list.addItem(card)
+        wanted_reqs = set(getattr(self._meta, "required_cards", []) or [])
+        if wanted_reqs:
+            for i in range(self.req_list.count()):
+                item = self.req_list.item(i)
+                if item.text() in wanted_reqs:
+                    item.setSelected(True)
+        tags_layout.addWidget(self.req_list)
+
         draw_box = QtWidgets.QFrame()
         draw_box.setProperty("card", True)
         draw_layout = QtWidgets.QVBoxLayout(draw_box)
         draw_layout.setContentsMargins(14, 12, 14, 12)
         draw_layout.setSpacing(8)
 
-        draw_title = QtWidgets.QLabel("Draw effect")
+        draw_title = QtWidgets.QLabel("Opening effects")
         draw_title.setProperty("role", "subtitle")
         draw_layout.addWidget(draw_title)
 
@@ -126,6 +165,53 @@ class CardSettingsDialog(QtWidgets.QDialog):
                     item.setSelected(True)
         draw_layout.addWidget(self.cost_list)
 
+        prosp_line = QtWidgets.QFrame()
+        prosp_line.setFrameShape(QtWidgets.QFrame.HLine)
+        prosp_line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        draw_layout.addWidget(prosp_line)
+
+        row3 = QtWidgets.QHBoxLayout()
+        self.prosperity_enabled = QtWidgets.QCheckBox("Enable prosperity-like excavate")
+        self.prosperity_enabled.setChecked(getattr(self._meta, "prosperity_effect", None) is not None)
+        row3.addWidget(self.prosperity_enabled)
+        row3.addStretch(1)
+        draw_layout.addLayout(row3)
+
+        row4 = QtWidgets.QHBoxLayout()
+        row4.addWidget(QtWidgets.QLabel("Type"))
+        self.prosp_mode_combo = QtWidgets.QComboBox()
+        self.prosp_mode_combo.addItem("Generic (dig x, add 1)", "generic")
+        self.prosp_mode_combo.addItem("True Prosperity (dig 3 or 6, add 1)", "true_prosperity")
+
+        meta_prosp = getattr(self._meta, "prosperity_effect", None)
+        mode = "true_prosperity"
+        if meta_prosp:
+            raw_mode = str(getattr(meta_prosp, "mode", "") or "").strip().lower()
+            if raw_mode in {"generic", "true_prosperity"}:
+                mode = raw_mode
+            elif int(getattr(meta_prosp, "dig_small", 3)) == int(getattr(meta_prosp, "dig_large", 6)):
+                mode = "generic"
+        mode_idx = 0 if mode == "generic" else 1
+        self.prosp_mode_combo.setCurrentIndex(mode_idx)
+        row4.addWidget(self.prosp_mode_combo)
+        row4.addStretch(1)
+        draw_layout.addLayout(row4)
+
+        row5 = QtWidgets.QHBoxLayout()
+        row5.addWidget(QtWidgets.QLabel("Generic dig x"))
+        self.prosp_generic_spin = QtWidgets.QSpinBox()
+        self.prosp_generic_spin.setRange(1, 12)
+        generic_default = 3
+        if meta_prosp:
+            generic_default = int(getattr(meta_prosp, "dig_small", 3) or 3)
+        self.prosp_generic_spin.setValue(max(1, generic_default))
+        row5.addWidget(self.prosp_generic_spin)
+        row5.addStretch(1)
+        draw_layout.addLayout(row5)
+
+        self.prosp_true_info = QtWidgets.QLabel("True Prosperity is fixed to: dig 3 or dig 6, then add 1.")
+        draw_layout.addWidget(self.prosp_true_info)
+
         layout.addWidget(tags_box)
         layout.addWidget(draw_box)
 
@@ -141,7 +227,10 @@ class CardSettingsDialog(QtWidgets.QDialog):
         layout.addLayout(btns)
 
         self.draw_enabled.toggled.connect(self._update_draw_state)
+        self.prosperity_enabled.toggled.connect(self._update_prosperity_state)
+        self.prosp_mode_combo.currentIndexChanged.connect(self._update_prosperity_state)
         self._update_draw_state(self.draw_enabled.isChecked())
+        self._update_prosperity_state(self.prosperity_enabled.isChecked())
 
         self.setMinimumSize(520, 420)
 
@@ -150,6 +239,14 @@ class CardSettingsDialog(QtWidgets.QDialog):
         self.cost_combo.setEnabled(enabled)
         self.cost_spin.setEnabled(enabled)
         self.cost_list.setEnabled(enabled)
+
+    def _update_prosperity_state(self, _signal_value: Any = None) -> None:
+        enabled = bool(self.prosperity_enabled.isChecked())
+        self.prosp_mode_combo.setEnabled(enabled)
+        mode = str(self.prosp_mode_combo.currentData() or "true_prosperity")
+        is_generic = mode == "generic"
+        self.prosp_generic_spin.setEnabled(enabled and is_generic)
+        self.prosp_true_info.setEnabled(enabled and (not is_generic))
 
     def _normalize_tag(self, raw: str) -> str:
         return " ".join(raw.strip().split()).lower()
@@ -174,6 +271,19 @@ class CardSettingsDialog(QtWidgets.QDialog):
     def _save(self) -> None:
         new_tags = [k for k, cb in self.tag_checks.items() if cb.isChecked()]
         draw_effect = None
+        prosperity_effect = None
+        max_copies = int(self.limit_combo.currentData() or 0)
+        required_cards = [
+            self.req_list.item(i).text()
+            for i in range(self.req_list.count())
+            if self.req_list.item(i).isSelected()
+        ]
+        clean_reqs: List[str] = []
+        for name in required_cards:
+            nm = str(name).strip()
+            if not nm or nm == self.card or nm in clean_reqs:
+                continue
+            clean_reqs.append(nm)
         if self.draw_enabled.isChecked():
             draw = max(1, int(self.draw_spin.value()))
             cost_mode = self.cost_combo.currentText().strip() or "none"
@@ -185,16 +295,35 @@ class CardSettingsDialog(QtWidgets.QDialog):
                 cost_count=max(1, cost_count) if cost_mode != "none" else 0,
                 cost_cards=cost_cards,
             )
+        if self.prosperity_enabled.isChecked():
+            mode = str(self.prosp_mode_combo.currentData() or "true_prosperity")
+            if mode == "generic":
+                dig = max(1, int(self.prosp_generic_spin.value()))
+                prosperity_effect = ProsperityEffect(mode="generic", dig_small=dig, dig_large=dig, add_count=1)
+            else:
+                prosperity_effect = ProsperityEffect(mode="true_prosperity", dig_small=3, dig_large=6, add_count=1)
 
-        if not new_tags and draw_effect is None:
+        if not new_tags and draw_effect is None and prosperity_effect is None and max_copies <= 0 and not clean_reqs:
             self.app.card_meta.pop(self.card, None)
         else:
-            self.app.card_meta[self.card] = CardMeta(tags=new_tags, draw_effect=draw_effect)
+            self.app.card_meta[self.card] = CardMeta(
+                tags=new_tags,
+                draw_effect=draw_effect,
+                prosperity_effect=prosperity_effect,
+                max_copies=max_copies,
+                required_cards=clean_reqs,
+            )
+
+        if self.app.enforce_card_copy_limit(self.card) and self.app.deck_tab:
+            self.app.deck_tab.refresh()
+            if self.app.sim_tab:
+                self.app.sim_tab.refresh_deckcount_default()
 
         if self.app.hands_tab:
             self.app.hands_tab.refresh_card_sources()
         if self.app.optimize_tab:
             self.app.optimize_tab.refresh()
+        self.app.mark_project_changed("Card settings saved.")
         self.accept()
 
 
@@ -301,20 +430,23 @@ class DeckTab(QtWidgets.QWidget):
 
     def add_update(self) -> None:
         name = self.card_edit.text().strip()
-        qty = int(self.qty_spin.value())
+        qty_requested = int(self.qty_spin.value())
         if not name:
             QtWidgets.QMessageBox.warning(self, "Missing data", "Please enter a card name.")
             return
-        if qty < 0:
+        if qty_requested < 0:
             QtWidgets.QMessageBox.warning(self, "Invalid value", "Quantity cannot be negative.")
             return
+        qty = self.app.clamp_card_qty(name, qty_requested)
 
         variant = self.app.get_active_deck()
         decklist = variant.decklist
         decklist[name] = qty
         if name in variant.bench:
             variant.bench.pop(name, None)
-        self.app._set_status(f"Updated deck: {name} = {qty}")
+        msg = f"Updated deck: {name} = {qty}"
+        if qty != qty_requested:
+            msg += " (limited)"
         self._refresh_variant(self.app.active_deck_id)
         if self.app.hands_tab:
             self.app.hands_tab.refresh_card_sources()
@@ -322,6 +454,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
+        self.app.mark_project_changed(msg)
 
     def copy_selected(self) -> None:
         table, deck_id, _from_bench = self._focused_table()
@@ -357,7 +490,7 @@ class DeckTab(QtWidgets.QWidget):
         target = variant.bench if to_bench else variant.decklist
         other = variant.decklist if to_bench else variant.bench
         for name, qty in cards.items():
-            target[name] = int(qty)
+            target[name] = self.app.clamp_card_qty(name, int(qty))
             if name in other:
                 other.pop(name, None)
         self._refresh_variant(deck_id)
@@ -367,7 +500,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
-        self.app._set_status(f"Pasted {len(cards)} card(s).")
+        self.app.mark_project_changed(f"Pasted {len(cards)} card(s).")
 
     def remove_selected(self) -> None:
         tree = self._active_table()
@@ -379,7 +512,6 @@ class DeckTab(QtWidgets.QWidget):
         card = tree.item(row, 0).text()
         decklist = self.app.get_active_decklist()
         decklist.pop(card, None)
-        self.app._set_status(f"Removed: {card}")
         self._refresh_variant(self.app.active_deck_id)
         if self.app.hands_tab:
             self.app.hands_tab.refresh_card_sources()
@@ -387,13 +519,13 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
+        self.app.mark_project_changed(f"Removed: {card}")
 
     def clear(self) -> None:
         reply = QtWidgets.QMessageBox.question(self, "Confirm", "Clear the entire deck?")
         if reply != QtWidgets.QMessageBox.Yes:
             return
         self.app.get_active_decklist().clear()
-        self.app._set_status("Deck cleared.")
         self._refresh_variant(self.app.active_deck_id)
         if self.app.hands_tab:
             self.app.hands_tab.refresh_card_sources()
@@ -401,6 +533,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
+        self.app.mark_project_changed("Deck cleared.")
 
     def delete_variant(self) -> None:
         if len(self.app.deck_variant_order) <= 1:
@@ -421,7 +554,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.active_deck_id = self.app.deck_variant_order[0]
         self._sync_tabs()
         self.app.refresh_all()
-        self.app._set_status(f"Deleted variant {variant.name}")
+        self.app.mark_project_changed(f"Deleted variant {variant.name}.")
 
     def open_card_settings(self) -> None:
         card = self._get_active_card_name()
@@ -604,7 +737,7 @@ class DeckTab(QtWidgets.QWidget):
                 self.app.optimize_tab.refresh()
             if self.app.sim_tab:
                 self.app.sim_tab.refresh_deckcount_default()
-            self.app._set_status(f"Created deck variant {variant.name}")
+            self.app.mark_project_changed(f"Created deck variant {variant.name}.")
             return
 
         for deck_id, data in self.variant_tabs.items():
@@ -613,6 +746,7 @@ class DeckTab(QtWidgets.QWidget):
                 self._refresh_variant(deck_id)
                 if self.app.sim_tab:
                     self.app.sim_tab.refresh_deckcount_default()
+                self.app.mark_project_changed(f"Selected deck variant {self.app.deck_variants[deck_id].name}.")
                 break
 
     def _on_tab_context(self, pos: QtCore.QPoint) -> None:
@@ -680,7 +814,7 @@ class DeckTab(QtWidgets.QWidget):
             self.tabs.setTabText(idx, new_name)
         if self.app.optimize_tab:
             self.app.optimize_tab.refresh()
-        self.app._set_status(f"Renamed variant to {new_name}")
+        self.app.mark_project_changed(f"Renamed variant to {new_name}.")
 
     def _delete_variant_by_id(self, deck_id: str) -> None:
         if len(self.app.deck_variant_order) <= 1:
@@ -699,7 +833,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.active_deck_id = self.app.deck_variant_order[0]
         self._sync_tabs()
         self.app.refresh_all()
-        self.app._set_status(f"Deleted variant {variant.name}")
+        self.app.mark_project_changed(f"Deleted variant {variant.name}.")
 
     # -------------------------
     # Helpers
@@ -791,6 +925,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
+        self.app.mark_project_changed("Moved card(s) to bench.")
 
     def _move_to_variant(self, deck_id: str) -> None:
         data = self.variant_tabs.get(deck_id)
@@ -812,7 +947,7 @@ class DeckTab(QtWidgets.QWidget):
                 continue
             card = card_item.text()
             qty = int(qty_item.text())
-            decklist[card] = qty
+            decklist[card] = self.app.clamp_card_qty(card, qty)
             if card in variant.bench:
                 variant.bench.pop(card, None)
         self._refresh_variant(deck_id)
@@ -822,6 +957,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
+        self.app.mark_project_changed("Moved card(s) to variant.")
 
     def _refresh_variant(self, deck_id: str) -> None:
         data = self.variant_tabs.get(deck_id)
@@ -935,7 +1071,7 @@ class DeckTab(QtWidgets.QWidget):
             self.app.optimize_tab.refresh()
         if self.app.sim_tab:
             self.app.sim_tab.refresh_deckcount_default()
-        self.app._set_status(f"Removed {len(cards)} card(s).")
+        self.app.mark_project_changed(f"Removed {len(cards)} card(s).")
 
     def _parse_clipboard_cards(self, text: str) -> Dict[str, int]:
         cards: Dict[str, int] = {}

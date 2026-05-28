@@ -22,6 +22,7 @@ class TrapsTab(QtWidgets.QWidget):
         self.widgets: Dict[str, Dict[str, Any]] = {}
         self.trap_def_rows: Dict[str, Dict[str, Any]] = {}
         self._refreshing = False
+        self._loading_mapping = False
         self._edit_mode = False
         self._build_ui()
 
@@ -175,6 +176,7 @@ class TrapsTab(QtWidgets.QWidget):
             if mode == "draws":
                 var = QtWidgets.QSpinBox()
                 var.setRange(0, 4)
+                var.valueChanged.connect(lambda _val, t=trap: self._mapping_value_changed(t))
                 row.addWidget(var)
                 row.addWidget(QtWidgets.QLabel("Extra draws (0–4)"))
                 self.widgets[trap] = {"type": "draws", "var": var}
@@ -200,6 +202,30 @@ class TrapsTab(QtWidgets.QWidget):
         except Exception:
             val = 0
         self.widgets[trap]["var"] = val
+        self._mapping_value_changed(trap)
+
+    def _mapping_value_changed(self, trap: str) -> None:
+        if self._refreshing or self._loading_mapping:
+            return
+        hand = self.app.get_current_hand()
+        if not hand or trap not in self.widgets:
+            return
+
+        mode = self.app.handtrap_defs.get(trap, "impact")
+        effects = self.app.handtrap_effects.setdefault(hand.id, {})
+        if mode == "draws":
+            value = int(self.widgets[trap]["var"].value())
+            if value <= 0:
+                effects.pop(trap, None)
+            else:
+                effects[trap] = {"mode": "draws", "value": value}
+        else:
+            value = int(self.widgets[trap].get("var", 0))
+            if value <= 0:
+                effects.pop(trap, None)
+            else:
+                effects[trap] = {"mode": "impact", "value": value}
+        self.app.mark_project_changed(f"Updated handtrap settings for {hand.id}.")
 
     def _add_trap(self) -> None:
         if not self._edit_mode:
@@ -216,7 +242,7 @@ class TrapsTab(QtWidgets.QWidget):
         self.new_trap_edit.clear()
         self._rebuild_trap_defs()
         self._rebuild_mapping_widgets()
-        self.app._set_status(f"Added handtrap: {name}")
+        self.app.mark_project_changed(f"Added handtrap: {name}.")
 
     def _remove_trap(self, trap: str) -> None:
         if not self._edit_mode:
@@ -228,7 +254,7 @@ class TrapsTab(QtWidgets.QWidget):
             effects.pop(trap, None)
         self._rebuild_trap_defs()
         self._rebuild_mapping_widgets()
-        self.app._set_status(f"Removed handtrap: {trap}")
+        self.app.mark_project_changed(f"Removed handtrap: {trap}.")
 
     def _set_trap_mode(self, trap: str, mode: str) -> None:
         if not self._edit_mode:
@@ -237,6 +263,7 @@ class TrapsTab(QtWidgets.QWidget):
             mode = "impact"
         self.app.handtrap_defs[trap] = mode
         self._rebuild_mapping_widgets()
+        self.app.mark_project_changed(f"Changed handtrap mode: {trap}.")
 
     def _toggle_edit_mode(self) -> None:
         self._edit_mode = not self._edit_mode
@@ -310,18 +337,22 @@ class TrapsTab(QtWidgets.QWidget):
         self.info.setText(f"Hand: {hand.id} | {hand.name} | Base score: {hand.base_score}")
 
         effects = self.app.handtrap_effects.setdefault(hid, {})
-        for trap in self._sorted_traps():
-            eff = effects.get(trap, {"value": 0})
-            mode = self.app.handtrap_defs.get(trap, "impact")
-            if mode == "draws":
-                val = int(eff.get("value", 0))
-                self.widgets[trap]["var"].setValue(val)
-            else:
-                val = int(eff.get("value", 0))
-                val = max(0, min(4, val))
-                combo = self.widgets[trap]["widget"]
-                combo.setCurrentIndex(val)
-                self.widgets[trap]["var"] = val
+        self._loading_mapping = True
+        try:
+            for trap in self._sorted_traps():
+                eff = effects.get(trap, {"value": 0})
+                mode = self.app.handtrap_defs.get(trap, "impact")
+                if mode == "draws":
+                    val = int(eff.get("value", 0))
+                    self.widgets[trap]["var"].setValue(val)
+                else:
+                    val = int(eff.get("value", 0))
+                    val = max(0, min(4, val))
+                    combo = self.widgets[trap]["widget"]
+                    combo.setCurrentIndex(val)
+                    self.widgets[trap]["var"] = val
+        finally:
+            self._loading_mapping = False
 
     def save(self) -> None:
         hand = self.app.get_current_hand()
@@ -345,6 +376,7 @@ class TrapsTab(QtWidgets.QWidget):
                 else:
                     effects[trap] = {"mode": "impact", "value": impact}
 
+        self.app.mark_project_changed(f"Saved handtrap settings for {hand.id}.")
         QtWidgets.QMessageBox.information(self, "Saved", f"Handtrap settings saved for {hand.id}.")
 
     def reset(self) -> None:
@@ -356,3 +388,4 @@ class TrapsTab(QtWidgets.QWidget):
             return
         self.app.handtrap_effects[hand.id] = {}
         self._load(hand.id)
+        self.app.mark_project_changed(f"Reset handtrap settings for {hand.id}.")

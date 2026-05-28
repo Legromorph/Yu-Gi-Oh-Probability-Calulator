@@ -437,7 +437,7 @@ class HandsTab(QtWidgets.QWidget):
 
         self.refresh()
         self.app.refresh_hand_dependent_views()
-        self.app._set_status(f"Created {hid}")
+        self.app.mark_project_changed(f"Created {hid}.")
 
     def duplicate_hand(self) -> None:
         hand = self.app.get_current_hand()
@@ -470,7 +470,7 @@ class HandsTab(QtWidgets.QWidget):
 
         self.refresh()
         self.app.refresh_hand_dependent_views()
-        self.app._set_status(f"Duplicated to {new_id}")
+        self.app.mark_project_changed(f"Duplicated to {new_id}.")
 
     def delete_hand(self) -> None:
         hand = self.app.get_current_hand()
@@ -490,7 +490,7 @@ class HandsTab(QtWidgets.QWidget):
 
         self.refresh()
         self.app.refresh_hand_dependent_views()
-        self.app._set_status(f"Deleted {hand.id}")
+        self.app.mark_project_changed(f"Deleted {hand.id}.")
 
     def save_hand(self) -> None:
         hand = self.app.get_current_hand()
@@ -512,7 +512,7 @@ class HandsTab(QtWidgets.QWidget):
 
         self.refresh()
         self.app.traps_tab.refresh()
-        self.app._set_status(f"Saved {hand.id}")
+        self.app.mark_project_changed(f"Saved {hand.id}.")
 
     # -------------------------
     # Must cards
@@ -572,6 +572,7 @@ class HandsTab(QtWidgets.QWidget):
 
         hand.must[card] = qty
         self.refresh_hand_editor()
+        self.app.mark_project_changed(f"Updated {hand.id}.")
 
     def remove_must_selected(self) -> None:
         hand = self.app.get_current_hand()
@@ -583,6 +584,7 @@ class HandsTab(QtWidgets.QWidget):
         key = self.must_table.verticalHeaderItem(row).text()
         hand.must.pop(key, None)
         self.refresh_hand_editor()
+        self.app.mark_project_changed(f"Updated {hand.id}.")
 
     # -------------------------
     # OR groups
@@ -646,6 +648,7 @@ class HandsTab(QtWidgets.QWidget):
         self._refresh_group_list(hand)
         self.group_list.setCurrentRow(len(hand.or_groups) - 1)
         self.refresh_or_options()
+        self.app.mark_project_changed(f"Updated {hand.id}.")
 
     def remove_group_selected(self) -> None:
         hand = self.app.get_current_hand()
@@ -657,6 +660,7 @@ class HandsTab(QtWidgets.QWidget):
         hand.or_groups.pop(gidx)
         self._refresh_group_list(hand)
         self.refresh_or_options()
+        self.app.mark_project_changed(f"Updated {hand.id}.")
 
     def add_option(self) -> None:
         hand = self.app.get_current_hand()
@@ -678,6 +682,7 @@ class HandsTab(QtWidgets.QWidget):
         gidx = self._ensure_group(hand)
         hand.or_groups[gidx].append({card: qty})
         self.refresh_or_options()
+        self.app.mark_project_changed(f"Updated {hand.id}.")
 
     def remove_option_selected(self) -> None:
         hand = self.app.get_current_hand()
@@ -692,3 +697,4 @@ class HandsTab(QtWidgets.QWidget):
         if 0 <= row < len(hand.or_groups[gidx]):
             hand.or_groups[gidx].pop(row)
             self.refresh_or_options()
+            self.app.mark_project_changed(f"Updated {hand.id}.")

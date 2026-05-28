@@ -442,6 +442,7 @@ class OptimizerRunner:
         self._context_fingerprint = getattr(sim_context, "fingerprint", "")
 
         self._card_tags = {c: (card_meta.get(c, {}) or {}).get("tags", []) for c in all_cards}
+        self._card_requirements = self._extract_card_requirements(card_meta)
         self._cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], ScoreResult] = {}
         self._bench_patience = max(10, int(self.settings.max_steps * 0.05))
         self._bench_unlocked = False
@@ -455,26 +456,31 @@ class OptimizerRunner:
             self._base_tag_score = self._tag_priority_score(state.base_counts, state.base_deckcount)
         else:
             self._bench_cards = set(self.bench_limits.keys())
-            base_score = self._score(base_counts, base_deckcount)
+            stabilized = self._stabilize_requirements(dict(self.base_counts))
+            if stabilized is not None:
+                self.base_counts = stabilized
+            total_cards = sum(int(v) for v in self.base_counts.values())
+            self.base_deckcount = max(int(self.settings.deck_min), min(int(self.settings.deck_max), max(total_cards, int(self.base_deckcount))))
+            base_score = self._score(self.base_counts, self.base_deckcount)
             explore_budget = max(10, settings.max_steps // 5)
             self.state = OptimizationState(
                 variant_id=variant_id,
                 settings=settings,
                 constraints=constraints,
                 locked_cards=locked_cards,
-                base_counts=dict(base_counts),
-                base_deckcount=int(base_deckcount),
+                base_counts=dict(self.base_counts),
+                base_deckcount=int(self.base_deckcount),
                 base_prob=base_score.prob,
                 base_trap_mean=base_score.trap_mean,
                 base_dup_prob=base_score.dup_prob,
-                current_counts=dict(base_counts),
-                current_deckcount=int(base_deckcount),
+                current_counts=dict(self.base_counts),
+                current_deckcount=int(self.base_deckcount),
                 current_prob=base_score.prob,
                 current_tag_score=base_score.tag_score,
                 current_trap_mean=base_score.trap_mean,
                 current_dup_prob=base_score.dup_prob,
-                best_counts=dict(base_counts),
-                best_deckcount=int(base_deckcount),
+                best_counts=dict(self.base_counts),
+                best_deckcount=int(self.base_deckcount),
                 best_prob=base_score.prob,
                 best_tag_score=base_score.tag_score,
                 best_trap_mean=base_score.trap_mean,
@@ -488,7 +494,69 @@ class OptimizerRunner:
                 stagnation_steps=0,
                 last_detail="",
             )
-            self._base_tag_score = self._tag_priority_score(base_counts, base_deckcount)
+            self._base_tag_score = self._tag_priority_score(self.base_counts, self.base_deckcount)
+
+    def _extract_card_requirements(self, card_meta: Dict[str, Any]) -> Dict[str, List[str]]:
+        out: Dict[str, List[str]] = {}
+        known = set(self.constraints.keys())
+        known.update(self.all_cards)
+        for card in known:
+            meta = card_meta.get(card, {}) or {}
+            reqs = []
+            for raw in (meta.get("required_cards", []) or []):
+                name = str(raw).strip()
+                if not name or name == card or name in reqs:
+                    continue
+                reqs.append(name)
+            if reqs:
+                out[str(card)] = reqs
+        return out
+
+    def _can_add_card(self, counts: Dict[str, int], card: str) -> bool:
+        reqs = self._card_requirements.get(card, [])
+        if not reqs:
+            return True
+        for req in reqs:
+            if counts.get(req, 0) <= 0:
+                return False
+        return True
+
+    def _requirements_satisfied(self, counts: Dict[str, int]) -> bool:
+        for card, reqs in self._card_requirements.items():
+            if counts.get(card, 0) <= 0:
+                continue
+            for req in reqs:
+                if counts.get(req, 0) <= 0:
+                    return False
+        return True
+
+    def _stabilize_requirements(self, counts: Dict[str, int]) -> Optional[Dict[str, int]]:
+        cand = dict(counts)
+        safety = max(1, len(cand) * 4)
+        for _ in range(safety):
+            changed = False
+            for card, reqs in self._card_requirements.items():
+                if cand.get(card, 0) <= 0:
+                    continue
+                missing = [r for r in reqs if cand.get(r, 0) <= 0]
+                if not missing:
+                    continue
+                card_min, _card_max = self._min_max(card)
+                if card_min > 0:
+                    # Card is mandatory by constraints; try forcing requirement cards in.
+                    for req in missing:
+                        _req_min, req_max = self._min_max(req)
+                        if req_max <= 0:
+                            return None
+                        if cand.get(req, 0) <= 0:
+                            cand[req] = 1
+                            changed = True
+                    continue
+                cand[card] = 0
+                changed = True
+            if not changed:
+                return cand
+        return cand if self._requirements_satisfied(cand) else None
 
     def _format_move_line(self, move: Optional[Tuple[str, int]], display_override: Optional[str] = None) -> str:
         if display_override:
@@ -719,12 +787,16 @@ class OptimizerRunner:
         new_qty = qty + delta
         if new_qty < min_v or new_qty > max_v:
             return None
+        if delta > 0 and not self._can_add_card(counts, card):
+            return None
         cand = dict(counts)
         cand[card] = new_qty
         total = sum(counts.values()) + delta
         if delta < 0 and total < self.settings.deck_min:
             return None
         if total > self.settings.deck_max:
+            return None
+        if not self._requirements_satisfied(cand):
             return None
         new_deckcount = int(deckcount)
         if total > new_deckcount:
@@ -941,11 +1013,15 @@ class OptimizerRunner:
                     if should_abort() or should_pause():
                         break
                     cand = dict(state.current_counts)
+                    if not self._can_add_card(cand, inc):
+                        continue
                     cand[inc] = cand.get(inc, 0) + 1
                     cand[dec] = cand.get(dec, 0) - 1
                     if cand[dec] < self._min_max(dec)[0] or cand[inc] > self._min_max(inc)[1]:
                         continue
                     if sum(cand.values()) > state.current_deckcount:
+                        continue
+                    if not self._requirements_satisfied(cand):
                         continue
                     consider_candidate((cand, state.current_deckcount), None, display_override=f"+1 {inc} / -1 {dec}")
 
@@ -1074,6 +1150,7 @@ class EvolutionRunner:
         self._context_fingerprint = getattr(sim_context, "fingerprint", "")
 
         self._card_tags = {c: (card_meta.get(c, {}) or {}).get("tags", []) for c in all_cards}
+        self._card_requirements = self._extract_card_requirements(card_meta)
         self._cache: Dict[Tuple[Tuple[Tuple[str, int], ...], int], ScoreResult] = {}
         self._bench_patience = max(10, int(self.settings.max_steps * 0.05))
         self._bench_unlocked = False
@@ -1087,21 +1164,26 @@ class EvolutionRunner:
             self.state = state
         else:
             self._bench_cards = set(self.bench_limits.keys())
-            base_score = self._score(base_counts, base_deckcount)
+            stabilized = self._stabilize_requirements(dict(self.base_counts))
+            if stabilized is not None:
+                self.base_counts = stabilized
+            total_cards = sum(int(v) for v in self.base_counts.values())
+            self.base_deckcount = max(int(self.settings.deck_min), min(int(self.settings.deck_max), max(total_cards, int(self.base_deckcount))))
+            base_score = self._score(self.base_counts, self.base_deckcount)
             population = self._init_population()
             self.state = EvolutionState(
                 variant_id=variant_id,
                 settings=settings,
                 constraints=constraints,
                 locked_cards=locked_cards,
-                base_counts=dict(base_counts),
-                base_deckcount=int(base_deckcount),
+                base_counts=dict(self.base_counts),
+                base_deckcount=int(self.base_deckcount),
                 base_prob=base_score.prob,
                 base_tag_score=base_score.tag_score,
                 base_trap_mean=base_score.trap_mean,
                 base_dup_prob=base_score.dup_prob,
-                best_counts=dict(base_counts),
-                best_deckcount=int(base_deckcount),
+                best_counts=dict(self.base_counts),
+                best_deckcount=int(self.base_deckcount),
                 best_prob=base_score.prob,
                 best_tag_score=base_score.tag_score,
                 best_trap_mean=base_score.trap_mean,
@@ -1116,6 +1198,67 @@ class EvolutionRunner:
             )
             self._bench_unlocked = self.state.bench_unlocked
             self._bench_unlocked = self.state.bench_unlocked
+
+    def _extract_card_requirements(self, card_meta: Dict[str, Any]) -> Dict[str, List[str]]:
+        out: Dict[str, List[str]] = {}
+        known = set(self.constraints.keys())
+        known.update(self.all_cards)
+        for card in known:
+            meta = card_meta.get(card, {}) or {}
+            reqs = []
+            for raw in (meta.get("required_cards", []) or []):
+                name = str(raw).strip()
+                if not name or name == card or name in reqs:
+                    continue
+                reqs.append(name)
+            if reqs:
+                out[str(card)] = reqs
+        return out
+
+    def _can_add_card(self, counts: Dict[str, int], card: str) -> bool:
+        reqs = self._card_requirements.get(card, [])
+        if not reqs:
+            return True
+        for req in reqs:
+            if counts.get(req, 0) <= 0:
+                return False
+        return True
+
+    def _requirements_satisfied(self, counts: Dict[str, int]) -> bool:
+        for card, reqs in self._card_requirements.items():
+            if counts.get(card, 0) <= 0:
+                continue
+            for req in reqs:
+                if counts.get(req, 0) <= 0:
+                    return False
+        return True
+
+    def _stabilize_requirements(self, counts: Dict[str, int]) -> Optional[Dict[str, int]]:
+        cand = dict(counts)
+        safety = max(1, len(cand) * 4)
+        for _ in range(safety):
+            changed = False
+            for card, reqs in self._card_requirements.items():
+                if cand.get(card, 0) <= 0:
+                    continue
+                missing = [r for r in reqs if cand.get(r, 0) <= 0]
+                if not missing:
+                    continue
+                card_min, _card_max = self._min_max(card)
+                if card_min > 0:
+                    for req in missing:
+                        _req_min, req_max = self._min_max(req)
+                        if req_max <= 0:
+                            return None
+                        if cand.get(req, 0) <= 0:
+                            cand[req] = 1
+                            changed = True
+                    continue
+                cand[card] = 0
+                changed = True
+            if not changed:
+                return cand
+        return cand if self._requirements_satisfied(cand) else None
 
     def _prob_eps(self, p: float, ref_p: float) -> float:
         n = max(1, int(self.settings.sims_per_step))
@@ -1302,6 +1445,10 @@ class EvolutionRunner:
 
     def _random_individual(self) -> Tuple[Dict[str, int], int]:
         counts = {card: int(self._min_max(card)[0]) for card in self.constraints.keys()}
+        stabilized = self._stabilize_requirements(counts)
+        if stabilized is None:
+            stabilized = dict(counts)
+        counts = stabilized
         total_min = sum(counts.values())
         deck_min = int(self.settings.deck_min)
         deck_max = int(self.settings.deck_max)
@@ -1310,13 +1457,19 @@ class EvolutionRunner:
             target_total = random.randint(target_total, deck_max)
 
         remaining = max(0, target_total - total_min)
-        cards = [c for c in self._candidate_cards() if counts.get(c, 0) < self._min_max(c)[1]]
+        cards = [
+            c for c in self._candidate_cards()
+            if counts.get(c, 0) < self._min_max(c)[1] and self._can_add_card(counts, c)
+        ]
         while remaining > 0 and cards:
             card = random.choice(cards)
             min_v, max_v = self._min_max(card)
             if counts[card] < max_v:
                 counts[card] += 1
                 remaining -= 1
+                if not self._requirements_satisfied(counts):
+                    counts[card] -= 1
+                    remaining += 1
             if counts[card] >= max_v:
                 cards.remove(card)
 
@@ -1338,12 +1491,16 @@ class EvolutionRunner:
         new_qty = qty + delta
         if new_qty < min_v or new_qty > max_v:
             return None
+        if delta > 0 and not self._can_add_card(counts, card):
+            return None
         cand = dict(counts)
         cand[card] = new_qty
         total = sum(counts.values()) + delta
         if delta < 0 and total < self.settings.deck_min:
             return None
         if total > self.settings.deck_max:
+            return None
+        if not self._requirements_satisfied(cand):
             return None
         new_deckcount = int(deckcount)
         if total > new_deckcount:
@@ -1396,6 +1553,10 @@ class EvolutionRunner:
             val = max(min_v, min(max_v, val))
             fixed[card] = val
 
+        stabilized = self._stabilize_requirements(fixed)
+        if stabilized is not None:
+            fixed = stabilized
+
         total = sum(fixed.values())
         # reduce if too large
         while total > deck_max:
@@ -1407,12 +1568,20 @@ class EvolutionRunner:
             total -= 1
         # increase if too small
         while total < deck_min:
-            candidates = [c for c in self._candidate_cards() if fixed.get(c, 0) < self._min_max(c)[1]]
+            candidates = [
+                c for c in self._candidate_cards()
+                if fixed.get(c, 0) < self._min_max(c)[1] and self._can_add_card(fixed, c)
+            ]
             if not candidates:
                 break
             card = random.choice(candidates)
             fixed[card] += 1
             total += 1
+
+        stabilized = self._stabilize_requirements(fixed)
+        if stabilized is not None:
+            fixed = stabilized
+            total = sum(fixed.values())
 
         if deckcount < total:
             deckcount = total

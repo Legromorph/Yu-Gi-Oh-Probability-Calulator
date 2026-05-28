@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-from .models import IdealHand, DeckVariant, CardMeta, DrawEffect
+from .models import IdealHand, DeckVariant, CardMeta, DrawEffect, ProsperityEffect
 # endregion
 
 
@@ -22,7 +22,7 @@ class ProjectData:
     handtrap_defs: Dict[str, str]
     id_counter: int
     optimize_state: Dict[str, Any]
-    version: int = 5
+    version: int = 6
 # endregion
 
 
@@ -39,7 +39,7 @@ def project_to_dict(
 ) -> Dict[str, Any]:
     """Serialize the entire project state to a dict (legacy JSON)."""
     return {
-        "version": 5,
+        "version": 6,
         "decklists": [dv.to_dict() for dv in deck_variants],
         "active_deck_id": active_deck_id,
         "card_meta": {k: v.to_dict() for k, v in (card_meta or {}).items()},
@@ -99,7 +99,7 @@ def project_from_dict(
         handtrap_defs=handtrap_defs,
         id_counter=id_counter,
         optimize_state=optimize_state,
-        version=int(data.get("version", 5) or 5),
+        version=int(data.get("version", 6) or 6),
     )
 # endregion
 
@@ -214,12 +214,40 @@ def _load_project_db(path: str) -> ProjectData:
             tags = _json_loads(row["tags_json"]) or []
             draw_json = _json_loads(row["draw_json"]) or {}
             draw_effect = None
+            prosperity_effect = None
+            max_copies = 0
             if draw_json:
-                try:
-                    draw_effect = DrawEffect.from_dict(draw_json)
-                except Exception:
-                    draw_effect = None
-            card_meta[card] = CardMeta(tags=list(tags), draw_effect=draw_effect)
+                if any(k in draw_json for k in ("draw_effect", "prosperity_effect", "max_copies", "required_cards")):
+                    draw_blob = draw_json.get("draw_effect") or {}
+                    prosp_blob = draw_json.get("prosperity_effect") or {}
+                    max_copies = int(draw_json.get("max_copies", 0) or 0)
+                    req_cards = [str(c) for c in (draw_json.get("required_cards", []) or [])]
+                    if draw_blob:
+                        try:
+                            draw_effect = DrawEffect.from_dict(draw_blob)
+                        except Exception:
+                            draw_effect = None
+                    if prosp_blob:
+                        try:
+                            prosperity_effect = ProsperityEffect.from_dict(prosp_blob)
+                        except Exception:
+                            prosperity_effect = None
+                else:
+                    # Legacy payload: flat draw effect only.
+                    req_cards = []
+                    try:
+                        draw_effect = DrawEffect.from_dict(draw_json)
+                    except Exception:
+                        draw_effect = None
+            else:
+                req_cards = []
+            card_meta[card] = CardMeta(
+                tags=list(tags),
+                draw_effect=draw_effect,
+                prosperity_effect=prosperity_effect,
+                max_copies=max_copies,
+                required_cards=req_cards,
+            )
 
         # Ideal hands
         ideal_hands: Dict[str, IdealHand] = {}
@@ -297,7 +325,18 @@ def _save_project_db(path: str, data: ProjectData) -> None:
 
             for card, meta in (data.card_meta or {}).items():
                 tags_json = _json_dumps(meta.tags or [])
-                draw_json = _json_dumps(meta.draw_effect.to_dict() if meta.draw_effect else {})
+                effect_payload: Dict[str, Any] = {}
+                if meta.draw_effect:
+                    effect_payload["draw_effect"] = meta.draw_effect.to_dict()
+                if getattr(meta, "prosperity_effect", None):
+                    effect_payload["prosperity_effect"] = meta.prosperity_effect.to_dict()
+                max_copies = int(getattr(meta, "max_copies", 0) or 0)
+                if max_copies > 0:
+                    effect_payload["max_copies"] = max_copies
+                req_cards = [str(c) for c in (getattr(meta, "required_cards", []) or []) if str(c).strip()]
+                if req_cards:
+                    effect_payload["required_cards"] = req_cards
+                draw_json = _json_dumps(effect_payload)
                 conn.execute(
                     "INSERT INTO card_meta (card, tags_json, draw_json) VALUES (?, ?, ?)",
                     (card, tags_json, draw_json),

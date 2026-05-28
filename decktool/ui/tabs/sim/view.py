@@ -411,6 +411,44 @@ class SimTab(QtWidgets.QWidget):
 
             left.addWidget(top_card)
 
+            # True prosperity stats (3 or 6)
+            prosp_card = QtWidgets.QFrame()
+            prosp_card.setProperty("card", True)
+            prosp_layout = QtWidgets.QVBoxLayout(prosp_card)
+            prosp_layout.setContentsMargins(12, 10, 12, 10)
+            prosp_layout.setSpacing(6)
+            prosp_title = QtWidgets.QLabel("True Prosperity stats")
+            prosp_title.setProperty("role", "subtitle")
+            prosp_layout.addWidget(prosp_title)
+
+            true_case_cnt = int(report.get("true_prosperity_case_count", 0) or 0)
+            true_case_p = float(report.get("true_prosperity_case_probability", 0.0) or 0.0)
+            true_three_cnt = int(report.get("true_prosperity_three_instead_of_six_count", 0) or 0)
+            true_three_p = float(report.get("true_prosperity_three_instead_of_six_probability", 0.0) or 0.0)
+            true_three_cond = float(
+                report.get("true_prosperity_three_instead_of_six_given_case_probability", 0.0) or 0.0
+            )
+            true_six_cnt = int(report.get("true_prosperity_six_needed_count", 0) or 0)
+            true_six_p = float(report.get("true_prosperity_six_needed_probability", 0.0) or 0.0)
+            true_six_cond = float(report.get("true_prosperity_six_needed_given_case_probability", 0.0) or 0.0)
+
+            prosp_layout.addWidget(
+                QtWidgets.QLabel(
+                    f"Case (true prosperity + unplayable before it): {true_case_p:.2%} ({true_case_cnt:,})"
+                )
+            )
+            prosp_layout.addWidget(
+                QtWidgets.QLabel(
+                    f"3 instead of 6 would be enough: {true_three_p:.2%} ({true_three_cnt:,}) | within case: {true_three_cond:.2%}"
+                )
+            )
+            prosp_layout.addWidget(
+                QtWidgets.QLabel(
+                    f"6 needed (3 fails, 6 succeeds): {true_six_p:.2%} ({true_six_cnt:,}) | within case: {true_six_cond:.2%}"
+                )
+            )
+            left.addWidget(prosp_card)
+
             # Per ideal hand table
             hand_table = QtWidgets.QTableWidget(0, 5)
             hand_table.setHorizontalHeaderLabels(["ID", "Name", "Prob", "Δ vs base", "Hits"])
